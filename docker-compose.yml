@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: telegram_bot
+    restart: always
+    volumes:
+      - ./src:/app/src
+      - ./credentials.json:/app/credentials.json
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1  # Для вывода логов без буферизации
+    init: true
+    stop_signal: SIGINT
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://api.telegram.org/bot${BOT_TOKEN}/getMe')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3 
