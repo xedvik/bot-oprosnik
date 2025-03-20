@@ -9,6 +9,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     ConversationHandler, filters
 )
+from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, ADMIN_IDS, SPREADSHEET_ID, setup_logging
 from utils.sheets import GoogleSheets
@@ -34,8 +35,20 @@ async def main():
         logger.error("Не указан SPREADSHEET_ID в переменных окружения")
         sys.exit(1)
     
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Создаем приложение с настройками таймаутов
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        read_timeout=30,
+        write_timeout=30,
+        connect_timeout=30,
+        pool_timeout=30
+    )
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .build()
+    )
     
     # Инициализация Google Sheets
     try:

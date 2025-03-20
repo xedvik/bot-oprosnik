@@ -29,6 +29,12 @@ class BaseHandler:
         # Очищаем данные пользователя
         context.user_data.clear()
         
+        # Регистрируем пользователя, если он еще не зарегистрирован
+        if not self.sheets.is_user_exists(user.id):
+            username = user.username if user.username else "Не указан"
+            if not self.sheets.add_user(user.id, username):
+                logger.error(f"Не удалось зарегистрировать пользователя {user.id}")
+        
         # Создаем клавиатуру
         keyboard = [
             [KeyboardButton("▶️ Начать опрос")]
@@ -36,8 +42,9 @@ class BaseHandler:
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         await update.message.reply_text(
-            f"Привет, {user.first_name}! 👋\n\n"
-            "Я бот для проведения опросов. Нажмите кнопку ниже, чтобы начать.",
+            f"Здравствуйте, {user.first_name}! 👋\n\n"
+            "Приглашаем вас поучаствовать в ДОДе Партии Новые Люди.\n"
+            "Нажмите кнопку ниже, чтобы начать опрос.",
             reply_markup=reply_markup
         )
         return "WAITING_START"

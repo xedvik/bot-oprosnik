@@ -29,6 +29,24 @@ ANSWERS_SHEET = os.getenv("ANSWERS_SHEET", "Ответы")
 STATS_SHEET = os.getenv("STATS_SHEET", "Статистика")
 ADMINS_SHEET = os.getenv("ADMINS_SHEET", "Админы")
 
+# Названия листов в Google таблице
+SHEET_NAMES = {
+    'questions': QUESTIONS_SHEET,
+    'answers': ANSWERS_SHEET,
+    'statistics': STATS_SHEET,
+    'admins': ADMINS_SHEET,
+    'users': os.getenv("USERS_SHEET", "Пользователи")
+}
+
+# Заголовки листов
+SHEET_HEADERS = {
+    'questions': ['ID', 'Вопрос', 'Варианты ответов'],
+    'answers': ['ID пользователя', 'ID вопроса', 'Ответ', 'Дата ответа'],
+    'statistics': ['ID вопроса', 'Вариант ответа', 'Количество'],
+    'admins': ['ID пользователя', 'Дата добавления'],
+    'users': ['ID', 'Telegram ID', 'Username', 'Дата регистрации']
+}
+
 # Проверяем наличие критически важных переменных
 if not SPREADSHEET_ID:
     print("ВНИМАНИЕ: SPREADSHEET_ID не указан в переменных окружения!")

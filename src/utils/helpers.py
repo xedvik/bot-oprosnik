@@ -5,6 +5,7 @@
 import logging
 from telegram import BotCommand, BotCommandScopeChat
 from telegram.ext import Application
+from telegram.error import BadRequest
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -69,15 +70,25 @@ async def setup_commands(application: Application, admin_ids: list):
         # Устанавливаем расширенный список команд для каждого админа
         for admin_id in admin_ids:
             try:
-                # Создаем scope для конкретного чата
-                chat_scope = BotCommandScopeChat(chat_id=int(admin_id))
-                
-                # Устанавливаем команды для админа
-                await application.bot.set_my_commands(
-                    commands=admin_commands,
-                    scope=chat_scope
-                )
-                logger.info(f"Установлены админские команды для {admin_id}")
+                # Проверяем, существует ли чат с админом
+                try:
+                    chat = await application.bot.get_chat(int(admin_id))
+                    if chat:
+                        # Создаем scope для конкретного чата
+                        chat_scope = BotCommandScopeChat(chat_id=int(admin_id))
+                        
+                        # Устанавливаем команды для админа
+                        await application.bot.set_my_commands(
+                            commands=admin_commands,
+                            scope=chat_scope
+                        )
+                        logger.info(f"Установлены админские команды для {admin_id}")
+                except BadRequest as e:
+                    if "Chat not found" in str(e):
+                        logger.warning(f"Чат с админом {admin_id} не найден. Команды будут установлены после первого взаимодействия с ботом.")
+                    else:
+                        raise
+                        
             except Exception as e:
                 logger.error(f"Ошибка при установке команд для админа {admin_id}: {e}")
                 

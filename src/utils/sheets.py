@@ -11,7 +11,7 @@ import os
 from config import (
     GOOGLE_CREDENTIALS_FILE, SPREADSHEET_ID,
     QUESTIONS_SHEET, ANSWERS_SHEET, STATS_SHEET,
-    ADMINS_SHEET
+    ADMINS_SHEET, SHEET_NAMES, SHEET_HEADERS
 )
 
 # Настройка логирования
@@ -36,16 +36,33 @@ class GoogleSheets:
                 GOOGLE_CREDENTIALS_FILE, scopes=scopes
             )
             
-            # Авторизуемся в Google Sheets
-            self.client = gspread.authorize(credentials)
+            # Авторизуемся в Google Sheets с использованием нового API
+            self.client = gspread.Client(auth=credentials)
             
             # Открываем таблицу
             self.sheet = self.client.open_by_key(SPREADSHEET_ID)
             
             logger.info("Подключение к Google Sheets успешно установлено")
             
+            # Инициализируем все необходимые листы при старте
+            self.initialize_sheets()
+            
         except Exception as e:
             logger.error(f"Ошибка при подключении к Google Sheets: {e}")
+            raise
+    
+    def initialize_sheets(self):
+        """Инициализация всех необходимых листов"""
+        try:
+            logger.info("Инициализация листов таблицы")
+            
+            # Инициализируем лист пользователей
+            self.initialize_users_sheet()
+            
+            # Здесь можно добавить инициализацию других листов при необходимости
+            
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации листов: {e}")
             raise
     
     def get_questions_with_options(self) -> dict:
@@ -458,4 +475,91 @@ class GoogleSheets:
         except Exception as e:
             logger.error(f"Ошибка при получении статистики: {e}")
             logger.exception(e)
-            return [] 
+            return []
+
+    def get_sheet_values(self, sheet_name: str) -> list:
+        """Получение всех значений с листа"""
+        try:
+            worksheet = self.sheet.worksheet(SHEET_NAMES[sheet_name])
+            return worksheet.get_all_values()
+        except Exception as e:
+            logger.error(f"Ошибка при получении данных с листа {sheet_name}: {e}")
+            return []
+
+    def get_next_user_id(self) -> int:
+        """Получение следующего доступного ID пользователя"""
+        try:
+            values = self.get_sheet_values('users')
+            if not values or len(values) == 1:  # Только заголовки
+                return 1
+            return max(int(row[0]) for row in values[1:]) + 1
+        except Exception as e:
+            logger.error(f"Ошибка при получении следующего ID пользователя: {e}")
+            return 1
+
+    def initialize_users_sheet(self) -> bool:
+        """Инициализация листа пользователей"""
+        try:
+            logger.info("Инициализация листа пользователей")
+            
+            # Проверяем существование листа
+            try:
+                users_sheet = self.sheet.worksheet(SHEET_NAMES['users'])
+            except gspread.exceptions.WorksheetNotFound:
+                logger.info("Создаем новый лист пользователей")
+                users_sheet = self.sheet.add_worksheet(
+                    title=SHEET_NAMES['users'],
+                    rows=1000,
+                    cols=len(SHEET_HEADERS['users'])
+                )
+                # Добавляем заголовки
+                users_sheet.update('A1:D1', [SHEET_HEADERS['users']])
+                logger.info("Заголовки листа пользователей установлены")
+                return True
+            
+            # Проверяем и обновляем заголовки
+            current_headers = users_sheet.row_values(1)
+            if not current_headers or current_headers != SHEET_HEADERS['users']:
+                logger.info("Обновляем заголовки листа пользователей")
+                users_sheet.update('A1:D1', [SHEET_HEADERS['users']])
+                logger.info("Заголовки листа пользователей обновлены")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации листа пользователей: {e}")
+            return False
+
+    def add_user(self, telegram_id: int, username: str) -> bool:
+        """Добавление нового пользователя"""
+        try:
+            # Получаем лист пользователей
+            users_sheet = self.sheet.worksheet(SHEET_NAMES['users'])
+            
+            # Получаем следующий ID
+            user_id = self.get_next_user_id()
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Добавляем пользователя
+            users_sheet.append_row([
+                str(user_id),
+                str(telegram_id),
+                username,
+                current_time
+            ])
+            
+            logger.info(f"Добавлен новый пользователь: ID={user_id}, Telegram ID={telegram_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении пользователя: {e}")
+            return False
+
+    def is_user_exists(self, telegram_id: int) -> bool:
+        """Проверка существования пользователя"""
+        try:
+            values = self.get_sheet_values('users')
+            if not values or len(values) == 1:  # Только заголовки
+                return False
+            return any(str(telegram_id) == row[1] for row in values[1:])
+        except Exception as e:
+            logger.error(f"Ошибка при проверке существования пользователя: {e}")
+            return False 
