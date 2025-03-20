@@ -11,7 +11,8 @@ import os
 from config import (
     GOOGLE_CREDENTIALS_FILE, SPREADSHEET_ID,
     QUESTIONS_SHEET, ANSWERS_SHEET, STATS_SHEET,
-    ADMINS_SHEET, SHEET_NAMES, SHEET_HEADERS
+    ADMINS_SHEET, SHEET_NAMES, SHEET_HEADERS,
+    DEFAULT_MESSAGES, MESSAGE_TYPES
 )
 
 # Настройка логирования
@@ -58,6 +59,9 @@ class GoogleSheets:
             
             # Инициализируем лист пользователей
             self.initialize_users_sheet()
+            
+            # Инициализируем лист сообщений
+            self.initialize_messages_sheet()
             
             # Здесь можно добавить инициализацию других листов при необходимости
             
@@ -562,4 +566,88 @@ class GoogleSheets:
             return any(str(telegram_id) == row[1] for row in values[1:])
         except Exception as e:
             logger.error(f"Ошибка при проверке существования пользователя: {e}")
+            return False
+
+    def initialize_messages_sheet(self) -> bool:
+        """Инициализация листа сообщений"""
+        try:
+            logger.info("Инициализация листа сообщений")
+            
+            # Проверяем существование листа
+            try:
+                messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
+            except gspread.exceptions.WorksheetNotFound:
+                logger.info("Создаем новый лист сообщений")
+                messages_sheet = self.sheet.add_worksheet(
+                    title=SHEET_NAMES['messages'],
+                    rows=100,
+                    cols=len(SHEET_HEADERS['messages'])
+                )
+                # Добавляем заголовки
+                messages_sheet.update('A1:C1', [SHEET_HEADERS['messages']])
+                
+                # Добавляем сообщения по умолчанию
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                default_rows = [
+                    ['start', DEFAULT_MESSAGES['start'], current_time],
+                    ['finish', DEFAULT_MESSAGES['finish'], current_time]
+                ]
+                messages_sheet.update('A2:C3', default_rows)
+                logger.info("Добавлены сообщения по умолчанию")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации листа сообщений: {e}")
+            return False
+
+    def get_message(self, message_type: str) -> str:
+        """Получение текста сообщения по его типу"""
+        try:
+            messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
+            all_messages = messages_sheet.get_all_values()
+            
+            # Пропускаем заголовок
+            if len(all_messages) > 1:
+                for row in all_messages[1:]:
+                    if row[0] == message_type:
+                        return row[1]
+            
+            # Если сообщение не найдено, возвращаем значение по умолчанию
+            return DEFAULT_MESSAGES.get(message_type, '')
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении сообщения типа {message_type}: {e}")
+            return DEFAULT_MESSAGES.get(message_type, '')
+
+    def update_message(self, message_type: str, new_text: str) -> bool:
+        """Обновление текста сообщения"""
+        try:
+            if message_type not in MESSAGE_TYPES:
+                logger.error(f"Неизвестный тип сообщения: {message_type}")
+                return False
+                
+            messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
+            all_messages = messages_sheet.get_all_values()
+            
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message_row = None
+            
+            # Ищем строку с нужным типом сообщения
+            for i, row in enumerate(all_messages):
+                if row[0] == message_type:
+                    message_row = i + 1  # +1 так как индексация с 1
+                    break
+            
+            if message_row:
+                # Обновляем существующую строку
+                messages_sheet.update(f'B{message_row}:C{message_row}', [[new_text, current_time]])
+            else:
+                # Добавляем новую строку
+                messages_sheet.append_row([message_type, new_text, current_time])
+            
+            logger.info(f"Сообщение типа {message_type} успешно обновлено")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении сообщения типа {message_type}: {e}")
             return False 

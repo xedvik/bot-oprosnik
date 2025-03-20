@@ -4,7 +4,7 @@
 
 import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import ContextTypes, ConversationHandler, Application
 
 from utils.sheets import GoogleSheets
 
@@ -14,11 +14,12 @@ logger = logging.getLogger(__name__)
 class BaseHandler:
     """Базовый класс для обработчиков сообщений"""
     
-    def __init__(self, sheets: GoogleSheets):
+    def __init__(self, sheets: GoogleSheets, application: Application = None):
         """Инициализация обработчика"""
         self.sheets = sheets
         self.questions_with_options = self.sheets.get_questions_with_options()
         self.questions = list(self.questions_with_options.keys())
+        self.application = application
         logger.info(f"Инициализирован обработчик с {len(self.questions)} вопросами")
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,10 +42,12 @@ class BaseHandler:
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
+        # Получаем приветственное сообщение и форматируем его
+        start_message = self.sheets.get_message('start')
+        formatted_message = start_message.format(username=user.first_name)
+        
         await update.message.reply_text(
-            f"Здравствуйте, {user.first_name}! 👋\n\n"
-            "Приглашаем вас поучаствовать в ДОДе Партии Новые Люди.\n"
-            "Нажмите кнопку ниже, чтобы начать опрос.",
+            formatted_message,
             reply_markup=reply_markup
         )
         return "WAITING_START"
@@ -67,6 +70,22 @@ class BaseHandler:
         
         await update.message.reply_text(
             "❌ Действие отменено",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    async def finish_survey(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Завершение опроса"""
+        user = update.effective_user
+        logger.info(f"Пользователь {user.id} завершил опрос")
+        
+        # Получаем сообщение о завершении
+        finish_message = self.sheets.get_message('finish')
+        formatted_message = finish_message.format(username=user.first_name)
+        
+        # Отправляем сообщение с благодарностью
+        await update.message.reply_text(
+            formatted_message,
             reply_markup=ReplyKeyboardRemove()
         )
         return ConversationHandler.END 

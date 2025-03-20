@@ -100,12 +100,8 @@ class SurveyHandler(BaseHandler):
                     save_duration = (datetime.now() - start_time).total_seconds()
                     logger.info(f"[{user_id}] Ответы сохранены за {save_duration:.2f} секунд")
                     
-                    # Отправляем сообщение пользователю сразу после сохранения ответов
-                    await update.message.reply_text(
-                        "✅ Спасибо за ваши ответы! Они успешно сохранены.",
-                        reply_markup=ReplyKeyboardRemove()
-                    )
-                    logger.info(f"[{user_id}] Отправлено сообщение об успешном сохранении")
+                    # Отправляем сообщение о завершении опроса
+                    await self.finish_survey(update, context)
                     
                     # Запускаем асинхронное обновление статистики после отправки сообщения
                     logger.info(f"[{user_id}] Запуск асинхронного обновления статистики")

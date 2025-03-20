@@ -43,6 +43,11 @@ async def setup_commands(application: Application, admin_ids: list):
         BotCommand("reset_user", "Сбросить прохождение опроса для пользователя"),
     ]
     
+    # Команды для редактирования системных сообщений
+    message_commands = [
+        BotCommand("messages", "Редактировать системные сообщения"),
+    ]
+    
     # Системные команды
     system_commands = [
         BotCommand("start", "Начать опрос"),
@@ -54,6 +59,7 @@ async def setup_commands(application: Application, admin_ids: list):
         system_commands +
         question_commands +
         admin_management_commands +
+        message_commands +
         data_commands
     )
 
