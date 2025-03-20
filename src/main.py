@@ -99,7 +99,8 @@ async def main():
     application.add_handler(message_conv_handler)
     
     # Добавление обработчиков для административных команд
-    application.add_handler(CommandHandler("restart", survey_handler.restart))
+    application.add_handler(CommandHandler("restart", survey_handler.restart, 
+                                          filters=filters.User(user_id=admin_ids)))
     application.add_handler(CommandHandler("stats", survey_handler.show_statistics, 
                                           filters=filters.User(user_id=admin_ids)))
     

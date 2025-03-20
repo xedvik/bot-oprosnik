@@ -568,6 +568,54 @@ class GoogleSheets:
             logger.error(f"Ошибка при проверке существования пользователя: {e}")
             return False
 
+    def get_users_list(self, page: int = 1, page_size: int = 10) -> tuple:
+        """Получение списка пользователей с пагинацией
+        
+        Args:
+            page (int): Номер страницы (начиная с 1)
+            page_size (int): Количество пользователей на странице
+            
+        Returns:
+            tuple: (список пользователей, общее количество пользователей, количество страниц)
+        """
+        try:
+            # Получаем данные листа пользователей
+            values = self.get_sheet_values('users')
+            if not values or len(values) <= 1:  # Только заголовки или нет данных
+                return [], 0, 0
+                
+            # Пропускаем заголовок
+            user_rows = values[1:]
+            total_users = len(user_rows)
+            total_pages = (total_users + page_size - 1) // page_size  # Округление вверх
+            
+            # Проверяем корректность номера страницы
+            if page < 1:
+                page = 1
+            elif page > total_pages and total_pages > 0:
+                page = total_pages
+                
+            # Вычисляем индексы для среза
+            start_idx = (page - 1) * page_size
+            end_idx = min(start_idx + page_size, total_users)
+            
+            # Получаем данные пользователей для текущей страницы
+            # [ID, Telegram ID, Username, Дата регистрации]
+            users = []
+            for i in range(start_idx, end_idx):
+                row = user_rows[i]
+                user_id = row[0] if len(row) > 0 else 'Н/Д'
+                telegram_id = row[1] if len(row) > 1 else 'Н/Д'
+                username = row[2] if len(row) > 2 else 'Н/Д'
+                reg_date = row[3] if len(row) > 3 else 'Н/Д'
+                users.append((user_id, telegram_id, username, reg_date))
+                
+            return users, total_users, total_pages
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка пользователей: {e}")
+            return [], 0, 0
+
     def initialize_messages_sheet(self) -> bool:
         """Инициализация листа сообщений"""
         try:

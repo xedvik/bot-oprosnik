@@ -532,4 +532,98 @@ class AdminHandler(BaseHandler):
             )
             return RESETTING_USER
             
-        return ConversationHandler.END 
+        return ConversationHandler.END
+
+    async def list_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Вывод списка зарегистрированных пользователей с пагинацией"""
+        logger.info(f"Пользователь {update.effective_user.id} запросил список пользователей")
+        
+        # Инициализируем страницу и сохраняем в context
+        context.user_data['users_page'] = 1
+        context.user_data['users_page_size'] = 10  # количество пользователей на странице
+        
+        # Получаем данные для первой страницы
+        await self._show_users_page(update, context)
+        
+        return BROWSING_USERS
+
+    async def handle_users_pagination(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка пагинации при просмотре списка пользователей"""
+        query = update.message.text
+        
+        if query == "❌ Закрыть":
+            await update.message.reply_text(
+                "Просмотр списка пользователей завершен.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+            
+        elif query == "⬅️ Предыдущая":
+            # Переход на предыдущую страницу
+            if context.user_data.get('users_page', 1) > 1:
+                context.user_data['users_page'] -= 1
+                
+        elif query == "➡️ Следующая":
+            # Переход на следующую страницу
+            current_page = context.user_data.get('users_page', 1)
+            total_pages = context.user_data.get('users_total_pages', 1)
+            
+            if current_page < total_pages:
+                context.user_data['users_page'] += 1
+                
+        # Показываем текущую страницу
+        await self._show_users_page(update, context)
+        return BROWSING_USERS
+        
+    async def _show_users_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Вспомогательный метод для отображения страницы со списком пользователей"""
+        page = context.user_data.get('users_page', 1)
+        page_size = context.user_data.get('users_page_size', 10)
+        
+        # Получаем список пользователей для текущей страницы
+        users, total_users, total_pages = self.sheets.get_users_list(page, page_size)
+        
+        # Сохраняем общее количество страниц
+        context.user_data['users_total_pages'] = total_pages
+        
+        if not users:
+            await update.message.reply_text(
+                "👥 Список пользователей пуст.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+            
+        # Формируем текст со списком пользователей
+        users_text = f"👥 Список пользователей (страница {page}/{total_pages}):\n\n"
+        for user_id, telegram_id, username, reg_date in users:
+            users_text += f"🆔 {user_id} | Telegram: {telegram_id}\n"
+            users_text += f"👤 @{username}\n"
+            users_text += f"📅 Зарегистрирован: {reg_date}\n"
+            users_text += f"{'─' * 30}\n"
+            
+        # Добавляем информацию о пагинации
+        users_text += f"\nВсего пользователей: {total_users}"
+        
+        # Создаем клавиатуру для навигации
+        keyboard = []
+        
+        # Добавляем кнопки пагинации
+        pagination_buttons = []
+        if page > 1:
+            pagination_buttons.append(KeyboardButton("⬅️ Предыдущая"))
+        if page < total_pages:
+            pagination_buttons.append(KeyboardButton("➡️ Следующая"))
+            
+        if pagination_buttons:
+            keyboard.append(pagination_buttons)
+            
+        # Добавляем кнопку закрытия
+        keyboard.append([KeyboardButton("❌ Закрыть")])
+        
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Отправляем сообщение с пагинацией
+        await update.message.reply_text(
+            users_text,
+            reply_markup=reply_markup
+        ) 

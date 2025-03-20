@@ -164,6 +164,24 @@ def create_admin_handlers(admin_handler: AdminHandler, admin_ids: list) -> list:
     )
     handlers.append(remove_admin_handler)
     
+    # Обработчик списка пользователей с пагинацией
+    list_users_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("list_users", admin_handler.list_users, 
+                          filters=filters.User(user_id=admin_ids))
+        ],
+        states={
+            BROWSING_USERS: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.handle_users_pagination)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", admin_handler.cancel_editing)
+        ],
+        name="list_users_conversation"
+    )
+    handlers.append(list_users_handler)
+    
     # Добавляем остальные обработчики
     handlers.extend([
         CommandHandler("list_questions", admin_handler.list_questions, 

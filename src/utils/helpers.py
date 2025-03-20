@@ -41,6 +41,7 @@ async def setup_commands(application: Application, admin_ids: list):
         BotCommand("stats", "Показать статистику опроса"),
         BotCommand("clear_data", "Очистить все ответы и статистику"),
         BotCommand("reset_user", "Сбросить прохождение опроса для пользователя"),
+        BotCommand("list_users", "Показать список пользователей"),
     ]
     
     # Команды для редактирования системных сообщений
