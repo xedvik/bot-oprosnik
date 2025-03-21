@@ -655,6 +655,24 @@ class GoogleSheets:
             # Проверяем существование листа
             try:
                 messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
+                
+                # Проверяем и обновляем структуру при необходимости
+                headers = messages_sheet.row_values(1)
+                if len(headers) < len(SHEET_HEADERS['messages']):
+                    logger.info("Обновляем структуру таблицы сообщений")
+                    messages_sheet.update('A1:D1', [SHEET_HEADERS['messages']])
+                    
+                    # Обновляем существующие данные, добавляя пустое значение для изображения
+                    rows = messages_sheet.get_all_values()[1:]  # Пропускаем заголовок
+                    for i, row in enumerate(rows, start=2):
+                        # Если строка имеет только тип и текст (и возможно дату)
+                        if len(row) < 3 or 'Изображение' not in headers:
+                            # Добавляем пустое значение для изображения перед датой
+                            message_type = row[0]
+                            message_text = row[1]
+                            date = row[2] if len(row) > 2 else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            messages_sheet.update(f'A{i}:D{i}', [[message_type, message_text, "", date]])
+                
             except gspread.exceptions.WorksheetNotFound:
                 logger.info("Создаем новый лист сообщений")
                 messages_sheet = self.sheet.add_worksheet(
@@ -663,15 +681,15 @@ class GoogleSheets:
                     cols=len(SHEET_HEADERS['messages'])
                 )
                 # Добавляем заголовки
-                messages_sheet.update('A1:C1', [SHEET_HEADERS['messages']])
+                messages_sheet.update('A1:D1', [SHEET_HEADERS['messages']])
                 
                 # Добавляем сообщения по умолчанию
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 default_rows = [
-                    ['start', DEFAULT_MESSAGES['start'], current_time],
-                    ['finish', DEFAULT_MESSAGES['finish'], current_time]
+                    ['start', DEFAULT_MESSAGES['start'], "", current_time],
+                    ['finish', DEFAULT_MESSAGES['finish'], "", current_time]
                 ]
-                messages_sheet.update('A2:C3', default_rows)
+                messages_sheet.update('A2:D3', default_rows)
                 logger.info("Добавлены сообщения по умолчанию")
             
             return True
@@ -679,8 +697,8 @@ class GoogleSheets:
             logger.error(f"Ошибка при инициализации листа сообщений: {e}")
             return False
 
-    def get_message(self, message_type: str) -> str:
-        """Получение текста сообщения по его типу"""
+    def get_message(self, message_type: str) -> dict:
+        """Получение текста и изображения сообщения по его типу"""
         try:
             messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
             all_messages = messages_sheet.get_all_values()
@@ -689,17 +707,28 @@ class GoogleSheets:
             if len(all_messages) > 1:
                 for row in all_messages[1:]:
                     if row[0] == message_type:
-                        return row[1]
+                        # Возвращаем текст и изображение
+                        image_url = row[2] if len(row) > 2 else ""
+                        return {
+                            "text": row[1],
+                            "image": image_url
+                        }
             
             # Если сообщение не найдено, возвращаем значение по умолчанию
-            return DEFAULT_MESSAGES.get(message_type, '')
+            return {
+                "text": DEFAULT_MESSAGES.get(message_type, ''),
+                "image": ""
+            }
             
         except Exception as e:
             logger.error(f"Ошибка при получении сообщения типа {message_type}: {e}")
-            return DEFAULT_MESSAGES.get(message_type, '')
+            return {
+                "text": DEFAULT_MESSAGES.get(message_type, ''),
+                "image": ""
+            }
 
-    def update_message(self, message_type: str, new_text: str) -> bool:
-        """Обновление текста сообщения"""
+    def update_message(self, message_type: str, new_text: str, image_url: str = None) -> bool:
+        """Обновление текста и изображения сообщения"""
         try:
             if message_type not in MESSAGE_TYPES:
                 logger.error(f"Неизвестный тип сообщения: {message_type}")
@@ -718,11 +747,23 @@ class GoogleSheets:
                     break
             
             if message_row:
+                # Если image_url не передан, сохраняем текущее значение
+                current_image = ""
+                if len(all_messages[message_row-1]) > 2:
+                    current_image = all_messages[message_row-1][2]
+                
+                image_to_save = image_url if image_url is not None else current_image
+                
                 # Обновляем существующую строку
-                messages_sheet.update(f'B{message_row}:C{message_row}', [[new_text, current_time]])
+                messages_sheet.update(f'B{message_row}:D{message_row}', [[new_text, image_to_save, current_time]])
             else:
                 # Добавляем новую строку
-                messages_sheet.append_row([message_type, new_text, current_time])
+                messages_sheet.append_row([
+                    message_type, 
+                    new_text, 
+                    image_url if image_url is not None else "", 
+                    current_time
+                ])
             
             logger.info(f"Сообщение типа {message_type} успешно обновлено")
             return True

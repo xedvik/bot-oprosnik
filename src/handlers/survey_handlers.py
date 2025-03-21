@@ -20,7 +20,7 @@ class SurveyHandler(BaseHandler):
     async def begin_survey(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало опроса"""
         user_id = update.effective_user.id
-        logger.info(f"Пользователь {user_id} пытается начать опрос")
+        logger.info(f"Пользователь {user_id} пытается пройти анкету")
         
         # Проверяем, проходил ли пользователь опрос
         if self.sheets.has_user_completed_survey(user_id):

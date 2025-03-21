@@ -36,20 +36,41 @@ class BaseHandler:
             if not self.sheets.add_user(user.id, username):
                 logger.error(f"Не удалось зарегистрировать пользователя {user.id}")
         
-        # Создаем клавиатуру
+        # Создаем клавиатуру с двумя кнопками
         keyboard = [
-            [KeyboardButton("▶️ Начать опрос")]
+            [KeyboardButton("▶️ Пройти анкету")],
+            [KeyboardButton("ℹ️ Узнать о мероприятии")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         # Получаем приветственное сообщение и форматируем его
-        start_message = self.sheets.get_message('start')
-        formatted_message = start_message.format(username=user.first_name)
+        message_data = self.sheets.get_message('start')
+        formatted_message = message_data["text"].format(username=user.first_name)
         
-        await update.message.reply_text(
-            formatted_message,
-            reply_markup=reply_markup
-        )
+        # Проверяем, есть ли изображение для отправки
+        image_url = message_data.get("image", "")
+        if image_url and image_url.strip():
+            try:
+                # Отправляем изображение с подписью и клавиатурой
+                await update.message.reply_photo(
+                    photo=image_url,
+                    caption=formatted_message,
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке изображения: {e}")
+                # В случае ошибки отправляем просто текст
+                await update.message.reply_text(
+                    formatted_message,
+                    reply_markup=reply_markup
+                )
+        else:
+            # Если изображения нет, отправляем только текст
+            await update.message.reply_text(
+                formatted_message,
+                reply_markup=reply_markup
+            )
+        
         return "WAITING_START"
     
     async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -80,12 +101,80 @@ class BaseHandler:
         logger.info(f"Пользователь {user.id} завершил опрос")
         
         # Получаем сообщение о завершении
-        finish_message = self.sheets.get_message('finish')
-        formatted_message = finish_message.format(username=user.first_name)
+        message_data = self.sheets.get_message('finish')
+        formatted_message = message_data["text"].format(username=user.first_name)
         
-        # Отправляем сообщение с благодарностью
-        await update.message.reply_text(
-            formatted_message,
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return ConversationHandler.END 
+        # Проверяем, есть ли изображение для отправки
+        image_url = message_data.get("image", "")
+        if image_url and image_url.strip():
+            try:
+                # Отправляем изображение с подписью
+                await update.message.reply_photo(
+                    photo=image_url,
+                    caption=formatted_message,
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке изображения: {e}")
+                # В случае ошибки отправляем только текст
+                await update.message.reply_text(
+                    formatted_message,
+                    reply_markup=ReplyKeyboardRemove()
+                )
+        else:
+            # Если изображения нет, отправляем только текст
+            await update.message.reply_text(
+                formatted_message,
+                reply_markup=ReplyKeyboardRemove()
+            )
+        return ConversationHandler.END
+        
+    async def show_event_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает информацию о мероприятии"""
+        user = update.effective_user
+        logger.info(f"Пользователь {user.id} запросил информацию о мероприятии")
+        
+        # Создаем клавиатуру для возврата
+        keyboard = [
+            [KeyboardButton("▶️ Пройти анкету")],
+            [KeyboardButton("🔙 Вернуться")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Получаем информацию о мероприятии
+        message_data = self.sheets.get_message('event_info')
+        event_info = message_data["text"].format(username=user.first_name)
+        
+        # Проверяем, есть ли изображение для отправки
+        image_url = message_data.get("image", "")
+        if image_url and image_url.strip():
+            try:
+                # Отправляем изображение с подписью
+                await update.message.reply_photo(
+                    photo=image_url,
+                    caption=event_info,
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке изображения: {e}")
+                # В случае ошибки отправляем только текст
+                await update.message.reply_text(
+                    event_info,
+                    reply_markup=reply_markup
+                )
+        else:
+            # Если изображения нет, отправляем только текст
+            await update.message.reply_text(
+                event_info,
+                reply_markup=reply_markup
+            )
+        
+        return "WAITING_EVENT_INFO"
+        
+    async def back_to_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Возвращает пользователя к начальному экрану"""
+        user = update.effective_user
+        logger.info(f"Пользователь {user.id} вернулся к начальному экрану")
+        
+        # Просто перенаправляем на метод start
+        return await self.start(update, context) 

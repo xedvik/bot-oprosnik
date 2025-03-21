@@ -18,7 +18,7 @@ async def setup_commands(application: Application, admin_ids: list):
     
     # Базовые команды для всех пользователей
     basic_commands = [
-        BotCommand("start", "Начать опрос")
+        BotCommand("start", "Пройти анкету")
     ]
     
     # Команды для управления вопросами
@@ -58,7 +58,7 @@ async def setup_commands(application: Application, admin_ids: list):
     
     # Системные команды
     system_commands = [
-        BotCommand("start", "Начать опрос"),
+        BotCommand("start", "Пройти анкету"),
         BotCommand("restart", "Перезапустить бота"),
     ]
     

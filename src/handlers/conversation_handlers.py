@@ -27,7 +27,13 @@ def create_survey_handler(survey_handler: SurveyHandler) -> ConversationHandler:
     
     # Добавляем состояния для ожидания начала и подтверждения
     survey_states[WAITING_START] = [
-        TelegramMessageHandler(filters.Regex(r"^▶️ Начать опрос$"), survey_handler.begin_survey)
+        TelegramMessageHandler(filters.Regex(r"^▶️ Пройти анкету$"), survey_handler.begin_survey),
+        TelegramMessageHandler(filters.Regex(r"^ℹ️ Узнать о мероприятии$"), survey_handler.show_event_info)
+    ]
+    
+    survey_states[WAITING_EVENT_INFO] = [
+        TelegramMessageHandler(filters.Regex(r"^▶️ Пройти анкету$"), survey_handler.begin_survey),
+        TelegramMessageHandler(filters.Regex(r"^🔙 Вернуться$"), survey_handler.back_to_start)
     ]
     
     survey_states[CONFIRMING] = [
@@ -261,6 +267,13 @@ def create_message_handlers(message_handler: CustomMessageHandler, admin_ids: li
             ],
             ENTERING_NEW_MESSAGE: [
                 TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, message_handler.save_new_message)
+            ],
+            ASKING_ADD_IMAGE: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, message_handler.handle_image_option)
+            ],
+            UPLOADING_MESSAGE_IMAGE: [
+                TelegramMessageHandler(filters.PHOTO, message_handler.handle_image_upload),
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, message_handler.handle_image_upload)
             ]
         },
         fallbacks=[
