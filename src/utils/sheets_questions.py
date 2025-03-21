@@ -21,7 +21,18 @@ def add_question(self, question: str, options: list = None) -> bool:
         # Подготавливаем данные для добавления
         row_data = [question]
         if options:
-            row_data.extend(options)
+            # Преобразуем варианты ответов в нужный формат
+            for option in options:
+                if isinstance(option, dict) and "text" in option:
+                    option_text = option["text"]
+                    # Если есть вложенные варианты, добавляем их в формате "Вариант::подвариант1;подвариант2"
+                    if "sub_options" in option and option["sub_options"]:
+                        sub_options_str = ";".join(option["sub_options"])
+                        option_text = f"{option_text}::{sub_options_str}"
+                    row_data.append(option_text)
+                else:
+                    # Обратная совместимость со старым форматом (просто строка)
+                    row_data.append(option)
         
         # Добавляем новый вопрос
         questions_sheet.append_row(row_data, value_input_option='USER_ENTERED')
@@ -106,7 +117,17 @@ def edit_question_options(self, question_index: int, options: list) -> bool:
         
         # Добавляем новые варианты ответов
         for i, option in enumerate(options):
-            questions_sheet.update_cell(row_index, i + 2, option)
+            # Проверяем, является ли вариант объектом с вложенными опциями или просто строкой
+            if isinstance(option, dict) and "text" in option:
+                option_text = option["text"]
+                # Если есть вложенные варианты, добавляем их в формате "Вариант::подвариант1;подвариант2"
+                if "sub_options" in option and option["sub_options"]:
+                    sub_options_str = ";".join(option["sub_options"])
+                    option_text = f"{option_text}::{sub_options_str}"
+                questions_sheet.update_cell(row_index, i + 2, option_text)
+            else:
+                # Обратная совместимость со старым форматом (просто строка)
+                questions_sheet.update_cell(row_index, i + 2, option)
         
         # Обновляем структуру других листов
         self.update_sheets_structure()
@@ -301,19 +322,29 @@ def update_sheets_structure(self) -> bool:
         stats_sheet = self.sheet.worksheet(STATS_SHEET)
         stats_data = []
         
+        # Добавляем заголовки
+        headers = ['Вопрос', 'Вариант ответа', 'Количество']
+        stats_data.append(headers)
+        
         # Для каждого вопроса с вариантами ответов
         for question, options in questions.items():
             if options:  # Только для вопросов с вариантами ответов
                 for option in options:
-                    stats_data.append([question, option, '0'])  # Начальное значение счетчика
+                    if isinstance(option, dict) and "text" in option:
+                        # Добавляем основной вариант
+                        stats_data.append([question, option["text"], '0'])
+                        
+                        # Обрабатываем вложенные варианты, если они есть
+                        if "sub_options" in option and option["sub_options"]:
+                            for sub_option in option["sub_options"]:
+                                # Добавляем вложенный вариант с отступом
+                                stats_data.append([question, f"  └ {sub_option}", '0'])
+                    else:
+                        # Для обратной совместимости со старым форматом
+                        stats_data.append([question, option, '0'])
         
-        # Если есть данные для статистики
+        # Обновляем весь лист статистики
         if stats_data:
-            # Добавляем заголовки
-            headers = ['Вопрос', 'Вариант ответа', 'Количество']
-            stats_data.insert(0, headers)
-            
-            # Обновляем весь лист статистики
             stats_sheet.clear()  # Очищаем текущие данные
             stats_sheet.update('A1', stats_data)  # Добавляем новые данные
         else:
@@ -325,7 +356,7 @@ def update_sheets_structure(self) -> bool:
         
     except Exception as e:
         logger.error(f"Ошибка при обновлении структуры листов: {e}")
-        logger.exception(e)
+        logger.error(e)
         return False
 
 def has_user_completed_survey(self, user_id: int) -> bool:

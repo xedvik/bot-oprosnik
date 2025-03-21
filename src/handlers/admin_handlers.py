@@ -24,7 +24,7 @@ class AdminHandler(BaseHandler):
         self.application = application  # Сохраняем application при инициализации
 
     async def list_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показ списка вопросов"""
+        """Вывод списка вопросов"""
         logger.info(f"Пользователь {update.effective_user.id} запросил список вопросов")
         
         # Проверяем, есть ли вопросы
@@ -39,7 +39,26 @@ class AdminHandler(BaseHandler):
         questions_text = "📋 Список вопросов:\n\n"
         for i, question in enumerate(self.questions):
             options = self.questions_with_options[question]
-            options_text = ", ".join(options) if options else "Свободный ответ"
+            
+            # Формируем читаемый список вариантов ответов
+            if options:
+                options_list = []
+                for opt in options:
+                    if isinstance(opt, dict) and "text" in opt:
+                        option_text = opt["text"]
+                        # Добавляем информацию о подвариантах
+                        if "sub_options" in opt and opt["sub_options"]:
+                            sub_count = len(opt["sub_options"])
+                            option_text += f" (+{sub_count} подварианта)"
+                        options_list.append(option_text)
+                    else:
+                        # Для обратной совместимости
+                        options_list.append(str(opt))
+                
+                options_text = ", ".join(options_list)
+            else:
+                options_text = "Свободный ответ"
+            
             questions_text += f"{i+1}. {question}\n   Варианты: {options_text}\n\n"
         
         # Отправляем список вопросов
@@ -145,26 +164,42 @@ class AdminHandler(BaseHandler):
             return CHOOSING_OPTIONS_TYPE
     
     async def handle_option_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка ввода варианта ответа"""
-        option = update.message.text
+        """Обработка ввода вариантов ответов"""
+        choice = update.message.text.strip()
+        logger.info(f"Получены варианты ответов: {choice}")
         
-        if option == "Готово":
-            options = context.user_data.get('options', [])
-            question = context.user_data['new_question']
-            
-            success = self.sheets.add_question(question, options)
+        # Проверяем наличие необходимых данных
+        if 'new_question' not in context.user_data:
+            await update.message.reply_text(
+                "❌ Ошибка: вопрос не найден",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        question = context.user_data['new_question']
+        
+        if choice == "❌ Отмена":
+            await update.message.reply_text(
+                "❌ Добавление вопроса отменено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Если был выбран свободный ответ
+        if context.user_data.get('free_form'):
+            # Добавляем вопрос без вариантов ответов
+            success = self.sheets.add_question(question)
             
             if success:
                 # Обновляем списки вопросов
                 self.questions_with_options = self.sheets.get_questions_with_options()
                 self.questions = list(self.questions_with_options.keys())
                 
-                # Обновляем списки вопросов в других обработчиках через application
+                # Обновляем списки вопросов в других обработчиках
                 await self._update_handlers_questions(update)
                 
-                options_text = "\n".join([f"- {opt}" for opt in options])
                 await update.message.reply_text(
-                    f"✅ Вопрос успешно добавлен:\n{question}\n\nВарианты ответов:\n{options_text}",
+                    f"✅ Вопрос со свободным ответом успешно добавлен:\n{question}",
                     reply_markup=ReplyKeyboardRemove()
                 )
             else:
@@ -172,28 +207,274 @@ class AdminHandler(BaseHandler):
                     "❌ Не удалось добавить вопрос",
                     reply_markup=ReplyKeyboardRemove()
                 )
+            
+            # Очищаем состояние
+            context.user_data.clear()
             return ConversationHandler.END
         
-        # Добавляем вариант в список
-        if 'options' not in context.user_data:
-            context.user_data['options'] = []
+        # Если был выбран вариант с вариантами ответов
+        # Разделяем варианты ответов и создаем структуру для вопроса
+        options_text = choice.strip()
         
-        context.user_data['options'].append(option)
+        # Разбор вариантов ответов
+        if '\n' in options_text:
+            # Многострочный ввод - каждая строка это вариант
+            options_raw = [opt.strip() for opt in options_text.split('\n') if opt.strip()]
+        else:
+            # Однострочный ввод - варианты разделены запятыми
+            options_raw = [opt.strip() for opt in options_text.split(',') if opt.strip()]
         
-        # Показываем текущие варианты и запрашиваем следующий
-        options = context.user_data['options']
-        options_text = "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
+        # Преобразуем в формат с поддержкой вложенных вариантов
+        options = []
+        for opt in options_raw:
+            options.append({"text": opt, "sub_options": []})
         
-        keyboard = [[KeyboardButton("Готово")]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        # Добавляем вопрос с вариантами ответов
+        success = self.sheets.add_question(question, options)
         
+        if success:
+            # Обновляем списки вопросов
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            # Обновляем списки вопросов в других обработчиках
+            await self._update_handlers_questions(update)
+            
+            # Спрашиваем, нужно ли добавить вложенные варианты
+            keyboard = [
+                [KeyboardButton("✅ Да, добавить вложенные варианты")],
+                [KeyboardButton("❌ Нет, оставить как есть")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            # Формируем список вариантов ответов для отображения
+            options_display = "\n".join(f"• {opt['text']}" for opt in options)
+            
+            await update.message.reply_text(
+                f"✅ Вопрос успешно добавлен:\n{question}\n\nВарианты ответов:\n{options_display}\n\n"
+                "Хотите добавить вложенные варианты ответов к каким-либо из основных вариантов?",
+                reply_markup=reply_markup
+            )
+            
+            # Сохраняем варианты для дальнейшего использования
+            context.user_data['options'] = options
+            
+            return ADDING_NESTED_OPTIONS
+        else:
+            await update.message.reply_text(
+                "❌ Не удалось добавить вопрос",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        # Очищаем состояние
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    async def handle_nested_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка добавления вложенных вариантов ответов"""
+        choice = update.message.text
+        
+        if choice == "❌ Нет, оставить как есть":
+            await update.message.reply_text(
+                "✅ Вопрос успешно сохранен без вложенных вариантов.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        if choice == "✅ Да, добавить вложенные варианты":
+            # Получим текущий вопрос и его варианты
+            question = context.user_data['new_question']
+            current_options = []
+            
+            # Получаем обновленные варианты из базы
+            for q, opts in self.questions_with_options.items():
+                if q == question:
+                    current_options = opts
+                    break
+            
+            # Если варианты найдены, предлагаем выбрать родительский вариант
+            if current_options:
+                keyboard = []
+                for opt in current_options:
+                    keyboard.append([KeyboardButton(opt["text"])])
+                keyboard.append([KeyboardButton("❌ Отмена")])
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                # Сохраняем контекст
+                context.user_data['current_question'] = question
+                
+                await update.message.reply_text(
+                    "Выберите вариант, к которому нужно добавить вложенные варианты:",
+                    reply_markup=reply_markup
+                )
+                
+                context.user_data['selecting_parent_option'] = True
+                return ADDING_NESTED_OPTIONS
+            else:
+                await update.message.reply_text(
+                    "❌ Не удалось найти варианты ответов для этого вопроса.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+        
+        # Если выбран родительский вариант
+        if 'selecting_parent_option' in context.user_data:
+            if choice == "❌ Отмена":
+                await update.message.reply_text(
+                    "✅ Вопрос успешно сохранен без дополнительных вложенных вариантов.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+            
+            # Сохраняем выбранный родительский вариант
+            context.user_data['parent_option'] = choice
+            context.user_data.pop('selecting_parent_option', None)
+            
+            # Запрашиваем ввод вложенного варианта
+            await update.message.reply_text(
+                f"Введите вложенный вариант для '{choice}':",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+            # Инициализируем список вложенных вариантов
+            context.user_data['sub_options'] = []
+            context.user_data['adding_sub_option'] = True
+            return ADDING_NESTED_OPTIONS
+        
+        # Если добавляем вложенный вариант
+        if 'adding_sub_option' in context.user_data:
+            if choice == "✅ Готово":
+                # Сохраняем вложенные варианты
+                question = context.user_data['current_question']
+                parent_option = context.user_data['parent_option']
+                sub_options = context.user_data.get('sub_options', [])
+                
+                # Получаем номер вопроса
+                question_num = -1
+                for i, q in enumerate(self.questions):
+                    if q == question:
+                        question_num = i
+                        break
+                
+                if question_num == -1:
+                    await update.message.reply_text(
+                        "❌ Не удалось найти вопрос.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return ConversationHandler.END
+                
+                # Получаем текущие варианты
+                current_options = self.questions_with_options[question]
+                
+                # Находим родительский вариант и добавляем вложенные
+                for opt in current_options:
+                    if opt["text"] == parent_option:
+                        opt["sub_options"] = sub_options
+                        break
+                
+                # Сохраняем обновленные варианты
+                success = self.sheets.edit_question_options(question_num, current_options)
+                
+                if success:
+                    # Обновляем список вопросов
+                    self.questions_with_options = self.sheets.get_questions_with_options()
+                    self.questions = list(self.questions_with_options.keys())
+                    
+                    # Обновляем списки вопросов в других обработчиках через application
+                    await self._update_handlers_questions(update)
+                    
+                    # Спрашиваем, нужно ли добавить вложенные варианты к другому варианту
+                    keyboard = [
+                        [KeyboardButton("✅ Да, к другому варианту")],
+                        [KeyboardButton("❌ Нет, завершить")]
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    
+                    await update.message.reply_text(
+                        f"✅ Вложенные варианты для '{parent_option}' успешно добавлены!\n\n"
+                        "Хотите добавить вложенные варианты к другому основному варианту?",
+                        reply_markup=reply_markup
+                    )
+                    
+                    # Очищаем состояние для возможного добавления к другому варианту
+                    context.user_data.pop('parent_option', None)
+                    context.user_data.pop('sub_options', None)
+                    context.user_data.pop('adding_sub_option', None)
+                    return ADDING_NESTED_OPTIONS
+                else:
+                    await update.message.reply_text(
+                        "❌ Не удалось сохранить вложенные варианты.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return ConversationHandler.END
+            
+            # Если вводим новый вложенный вариант
+            if 'sub_options' not in context.user_data:
+                context.user_data['sub_options'] = []
+            
+            context.user_data['sub_options'].append(choice)
+            
+            # Запрашиваем следующий вложенный вариант
+            keyboard = [[KeyboardButton("✅ Готово")]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            parent_option = context.user_data['parent_option']
+            
+            await update.message.reply_text(
+                f"✅ Вложенный вариант добавлен: {choice}\n\n"
+                f"Текущие вложенные варианты для '{parent_option}':\n" +
+                "\n".join(f"• {opt}" for opt in context.user_data['sub_options']) +
+                "\n\nВведите следующий вложенный вариант или нажмите 'Готово':",
+                reply_markup=reply_markup
+            )
+            
+            return ADDING_NESTED_OPTIONS
+        
+        # Обрабатываем выбор добавления к другому варианту
+        if choice == "✅ Да, к другому варианту":
+            # Получаем текущий вопрос и его варианты
+            question = context.user_data['current_question']
+            current_options = self.questions_with_options[question]
+            
+            # Формируем клавиатуру только с вариантами без вложенных
+            keyboard = []
+            for opt in current_options:
+                # Если у варианта еще нет вложенных вариантов или они пусты
+                if not opt.get("sub_options"):
+                    keyboard.append([KeyboardButton(opt["text"])])
+            
+            # Если нет вариантов без вложенных, сообщаем об этом
+            if not keyboard:
+                await update.message.reply_text(
+                    "У всех вариантов уже есть вложенные варианты. Вопрос успешно сохранен.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+            
+            keyboard.append([KeyboardButton("❌ Отмена")])
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                "Выберите еще один вариант для добавления вложенных вариантов:",
+                reply_markup=reply_markup
+            )
+            
+            context.user_data['selecting_parent_option'] = True
+            return ADDING_NESTED_OPTIONS
+        
+        if choice == "❌ Нет, завершить":
+            await update.message.reply_text(
+                "✅ Вопрос с вложенными вариантами успешно сохранен!",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Неизвестный выбор
         await update.message.reply_text(
-            f"Добавлен вариант: {option}\n\nТекущие варианты:\n{options_text}\n\n"
-            "Введите следующий вариант ответа (или нажмите 'Готово', когда закончите):",
-            reply_markup=reply_markup
+            "❌ Пожалуйста, выберите один из предложенных вариантов.",
+            reply_markup=ReplyKeyboardRemove()
         )
-        
-        return ADDING_OPTIONS 
+        return ConversationHandler.END
 
     async def clear_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало процесса очистки данных"""

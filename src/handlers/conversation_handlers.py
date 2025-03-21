@@ -46,10 +46,22 @@ def create_survey_handler(survey_handler: SurveyHandler) -> ConversationHandler:
     logger.info(f"Добавление состояний для {questions_count} вопросов")
     
     for i in range(questions_count):
+        # Основное состояние для выбора варианта ответа
         question_state = f"QUESTION_{i}"
         survey_states[question_state] = [
             TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, survey_handler.handle_answer)
         ]
+        
+        # Состояние для выбора вложенного варианта ответа
+        sub_question_state = f"QUESTION_{i}_SUB"
+        survey_states[sub_question_state] = [
+            TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, survey_handler.handle_answer)
+        ]
+    
+    # Добавляем состояние для вложенных вариантов ответов
+    survey_states[SUB_OPTIONS] = [
+        TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, survey_handler.handle_answer)
+    ]
     
     # Создаем обработчик диалога
     return ConversationHandler(
@@ -84,6 +96,9 @@ def create_admin_handlers(admin_handler: AdminHandler, admin_ids: list) -> list:
             ],
             ADDING_OPTIONS: [
                 TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.handle_option_input)
+            ],
+            ADDING_NESTED_OPTIONS: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.handle_nested_options)
             ]
         },
         fallbacks=[
@@ -223,6 +238,15 @@ def create_edit_handlers(edit_handler: EditHandler, admin_ids: list) -> list:
             ],
             EDITING_OPTIONS: [
                 TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_options_edit)
+            ],
+            EDITING_SUB_OPTIONS: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_sub_options_edit)
+            ],
+            ADDING_SUB_OPTION: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_add_sub_option)
+            ],
+            REMOVING_SUB_OPTION: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_remove_sub_option)
             ]
         },
         fallbacks=[

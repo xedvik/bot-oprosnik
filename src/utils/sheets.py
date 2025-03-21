@@ -93,7 +93,19 @@ class GoogleSheets:
                     
                 question = row[0]
                 # Получаем варианты ответов, пропуская пустые
-                options = [opt for opt in row[1:] if opt]
+                options = []
+                for opt in row[1:]:
+                    if not opt:  # Пропускаем пустые ячейки
+                        continue
+                    
+                    # Проверяем, содержит ли опция вложенные варианты (формат: "Вариант::подвариант1;подвариант2")
+                    if "::" in opt:
+                        main_opt, sub_opts_str = opt.split("::", 1)
+                        sub_options = [sub_opt.strip() for sub_opt in sub_opts_str.split(";") if sub_opt.strip()]
+                        options.append({"text": main_opt.strip(), "sub_options": sub_options})
+                    else:
+                        options.append({"text": opt.strip(), "sub_options": []})
+                
                 questions_with_options[question] = options
             
             logger.info(f"Получено {len(questions_with_options)} вопросов")
@@ -168,7 +180,17 @@ class GoogleSheets:
             # Инициализируем статистику для каждого вопроса с вариантами
             for question, options in questions_with_options.items():
                 if options:  # Только для вопросов с вариантами ответов
-                    stats[question] = {option: 0 for option in options}
+                    stats[question] = {}
+                    for option in options:
+                        # Добавляем основной вариант
+                        option_text = option["text"]
+                        stats[question][option_text] = 0
+                        
+                        # Добавляем вложенные варианты, если они есть
+                        if option.get("sub_options"):
+                            for sub_option in option["sub_options"]:
+                                combined_option = f"{option_text} - {sub_option}"
+                                stats[question][combined_option] = 0
             
             # Обрабатываем ответы (пропускаем заголовок)
             for row in answers_data[1:]:
@@ -177,8 +199,9 @@ class GoogleSheets:
                     if i < len(questions):
                         question = questions[i]
                         # Учитываем только вопросы с вариантами ответов
-                        if question in stats and answer in stats[question]:
-                            stats[question][answer] += 1
+                        if question in stats:
+                            if answer in stats[question]:
+                                stats[question][answer] += 1
             
             # Обновляем лист статистики
             stats_sheet = self.sheet.worksheet(STATS_SHEET)
@@ -197,10 +220,29 @@ class GoogleSheets:
                 # Получаем общее количество ответов на этот вопрос
                 total_answers = sum(answers_count.values())
                 
-                # Для каждого варианта ответа показываем статистику
+                # Сортируем ответы: сначала основные варианты, потом вложенные
+                main_options = {}
+                nested_options = {}
+                
                 for option, count in answers_count.items():
+                    if " - " in option:
+                        main_opt, sub_opt = option.split(" - ", 1)
+                        if main_opt not in nested_options:
+                            nested_options[main_opt] = []
+                        nested_options[main_opt].append((sub_opt, count))
+                    else:
+                        main_options[option] = count
+                
+                # Выводим статистику для каждого основного варианта и его вложенных вариантов
+                for option, count in main_options.items():
                     percentage = (count / total_answers * 100) if total_answers > 0 else 0
                     stats_sheet.append_row([option, f"{percentage:.1f}%", str(count)])
+                    
+                    # Если у этого варианта есть вложенные, выводим их с отступом
+                    if option in nested_options:
+                        for sub_opt, sub_count in nested_options[option]:
+                            sub_percentage = (sub_count / total_answers * 100) if total_answers > 0 else 0
+                            stats_sheet.append_row([f"  └ {sub_opt}", f"{sub_percentage:.1f}%", str(sub_count)])
             
             # Добавляем общее количество опросов
             total_surveys = len(answers_data) - 1  # -1 для заголовка

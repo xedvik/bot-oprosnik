@@ -58,10 +58,47 @@ class SurveyHandler(BaseHandler):
         question = self.questions[current_question_num]
         options = self.questions_with_options[question]
         
+        # Проверяем, есть ли в контексте выбранный ранее ответ для этого вопроса
+        parent_answer = context.user_data.get('current_parent_answer', None)
+        parent_option = None
+        
         # Создаем клавиатуру с вариантами ответов, если они есть
         if options:
-            keyboard = [[KeyboardButton(opt)] for opt in options]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            # Если есть родительский ответ, показываем только вложенные варианты
+            if parent_answer:
+                # Найдем родительский вариант
+                for opt in options:
+                    if opt["text"] == parent_answer:
+                        parent_option = opt
+                        break
+                
+                if parent_option and parent_option["sub_options"]:
+                    # Показываем вложенные варианты ответов
+                    keyboard = [[KeyboardButton(sub_opt)] for sub_opt in parent_option["sub_options"]]
+                    keyboard.append([KeyboardButton("◀️ Назад к основным вариантам")])
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    
+                    # Отправляем вопрос с вложенными вариантами
+                    await update.message.reply_text(
+                        f"Вы выбрали: {parent_answer}\n"
+                        f"Вопрос {current_question_num + 1}/{len(self.questions)}:\n\n{question}\n\n"
+                        "Пожалуйста, выберите один из вариантов:",
+                        reply_markup=reply_markup
+                    )
+                    return f"QUESTION_{current_question_num}_SUB"
+                else:
+                    # Если у выбранного варианта нет подвариантов, принимаем ответ и идем дальше
+                    context.user_data['answers'].append(parent_answer)
+                    # Очищаем текущий родительский ответ
+                    context.user_data.pop('current_parent_answer', None)
+                    logger.info(f"Сохранен ответ: {parent_answer}")
+                    
+                    # Переходим к следующему вопросу
+                    return await self.send_question(update, context)
+            else:
+                # Показываем основные варианты ответов
+                keyboard = [[KeyboardButton(opt["text"])] for opt in options]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         else:
             # Если вариантов нет, используем обычный ввод
             reply_markup = ReplyKeyboardRemove()
@@ -120,6 +157,7 @@ class SurveyHandler(BaseHandler):
             elif answer == "🔄 Начать заново":
                 # Очищаем ответы и начинаем заново
                 context.user_data['answers'] = []
+                context.user_data.pop('current_parent_answer', None)
                 return await self.send_question(update, context)
             
             else:
@@ -137,22 +175,85 @@ class SurveyHandler(BaseHandler):
         current_question = self.questions[current_question_num]
         available_options = self.questions_with_options[current_question]
         
-        # Проверяем, есть ли варианты ответов и соответствует ли ответ одному из них
-        if available_options and answer not in available_options:
-            logger.warning(f"[{user_id}] Получен недопустимый ответ: {answer}")
-            # Формируем клавиатуру с доступными вариантами
-            keyboard = [[KeyboardButton(opt)] for opt in available_options]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        # Проверка для вложенных вариантов
+        if update.callback_query and update.callback_query.data == 'QUESTION_SUB':
+            state = f"QUESTION_{current_question_num}_SUB"
+            # Найдем родительский вариант и его подварианты
+            parent_answer = context.user_data.get('current_parent_answer')
+            parent_option = None
             
-            await update.message.reply_text(
-                "❌ Пожалуйста, выберите один из предложенных вариантов ответа:",
-                reply_markup=reply_markup
-            )
-            return f"QUESTION_{current_question_num}"
+            for opt in available_options:
+                if opt["text"] == parent_answer:
+                    parent_option = opt
+                    break
+            
+            if parent_option and parent_option["sub_options"]:
+                # Проверяем, соответствует ли ответ одному из подвариантов
+                if answer == "◀️ Назад к основным вариантам":
+                    # Возвращаемся к основным вариантам
+                    context.user_data.pop('current_parent_answer', None)
+                    return await self.send_question(update, context)
+                
+                if answer not in parent_option["sub_options"]:
+                    # Ответ не соответствует ни одному из подвариантов
+                    keyboard = [[KeyboardButton(sub_opt)] for sub_opt in parent_option["sub_options"]]
+                    keyboard.append([KeyboardButton("◀️ Назад к основным вариантам")])
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    
+                    await update.message.reply_text(
+                        "❌ Пожалуйста, выберите один из предложенных вариантов:",
+                        reply_markup=reply_markup
+                    )
+                    return state
+                
+                # Сохраняем полный ответ (родительский + дочерний)
+                full_answer = f"{parent_answer} - {answer}"
+                context.user_data['answers'].append(full_answer)
+                # Очищаем текущий родительский ответ
+                context.user_data.pop('current_parent_answer', None)
+                logger.info(f"Сохранен составной ответ: {full_answer}")
+                
+                # Переходим к следующему вопросу
+                return await self.send_question(update, context)
         
-        # Сохраняем ответ
-        context.user_data['answers'].append(answer)
-        logger.info(f"Сохранен ответ: {answer}")
+        # Проверяем для обычных вариантов ответов
+        if available_options:
+            # Проверяем, соответствует ли ответ одному из вариантов
+            option_texts = [opt["text"] for opt in available_options]
+            
+            if answer not in option_texts:
+                logger.warning(f"[{user_id}] Получен недопустимый ответ: {answer}")
+                # Формируем клавиатуру с доступными вариантами
+                keyboard = [[KeyboardButton(opt["text"])] for opt in available_options]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                await update.message.reply_text(
+                    "❌ Пожалуйста, выберите один из предложенных вариантов ответа:",
+                    reply_markup=reply_markup
+                )
+                return f"QUESTION_{current_question_num}"
+            
+            # Находим выбранный вариант ответа
+            selected_option = None
+            for opt in available_options:
+                if opt["text"] == answer:
+                    selected_option = opt
+                    break
+            
+            # Проверяем, есть ли у выбранного варианта подварианты
+            if selected_option and selected_option["sub_options"]:
+                # Сохраняем выбранный ответ для последующей обработки
+                context.user_data['current_parent_answer'] = answer
+                # Отправляем подварианты
+                return await self.send_question(update, context)
+            
+            # Если подвариантов нет, сохраняем ответ и идем дальше
+            context.user_data['answers'].append(answer)
+            logger.info(f"Сохранен ответ: {answer}")
+        else:
+            # Для вопросов без вариантов просто сохраняем ответ
+            context.user_data['answers'].append(answer)
+            logger.info(f"Сохранен свободный ответ: {answer}")
         
         # Отправляем следующий вопрос
         return await self.send_question(update, context)
@@ -189,19 +290,47 @@ class SurveyHandler(BaseHandler):
         # Формируем заголовок статистики с общим количеством
         statistics = f"📊 Статистика опроса\n👥 Всего пройдено: {total_surveys}\n\n"
         
-        # Группируем статистику по вопросам
-        current_question = None
-        for question, option, count in self.sheets.get_statistics():
-            if question != current_question:
-                if current_question:  # Добавляем пустую строку между вопросами
-                    statistics += "\n"
-                statistics += f"*{question}*\n"  # Выделяем вопрос жирным
-                current_question = question
-            statistics += f"└ {option}: {count}\n"
+        # Получаем данные статистики
+        stats_data = self.sheets.get_statistics()
         
         # Проверяем, есть ли статистика
-        if statistics == f"📊 Статистика опроса\n👥 Всего пройдено: {total_surveys}\n\n":
+        if not stats_data:
             statistics = "📊 Статистика недоступна. Нет вопросов с вариантами ответов или еще не получено ответов."
+            
+            # Отправляем статистику
+            await update.message.reply_text(
+                statistics,
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode='Markdown'
+            )
+            
+            return ConversationHandler.END
+        
+        # Группируем статистику по вопросам
+        grouped_stats = {}
+        for question, option, count in stats_data:
+            if question not in grouped_stats:
+                grouped_stats[question] = []
+            
+            # Добавляем информацию о варианте ответа
+            grouped_stats[question].append((option, count))
+        
+        # Формируем текст статистики
+        for question, options_data in grouped_stats.items():
+            # Добавляем заголовок вопроса
+            statistics += f"*{question}*\n"
+            
+            # Добавляем варианты ответов
+            for option, count in options_data:
+                # Проверяем, является ли вариант вложенным (с префиксом "  └ ")
+                if option.startswith("  └ "):
+                    # Для вложенных вариантов добавляем дополнительный отступ
+                    statistics += f"   └ {option[4:]}: {count}\n"
+                else:
+                    statistics += f"└ {option}: {count}\n"
+            
+            # Добавляем пустую строку между вопросами
+            statistics += "\n"
         
         # Отправляем статистику с поддержкой Markdown
         await update.message.reply_text(
