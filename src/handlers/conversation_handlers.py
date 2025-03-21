@@ -5,7 +5,7 @@
 import logging
 from telegram.ext import (
     CommandHandler, MessageHandler as TelegramMessageHandler, 
-    ConversationHandler, filters
+    ConversationHandler, filters, CallbackQueryHandler
 )
 
 from models.states import *
@@ -13,6 +13,7 @@ from handlers.survey_handlers import SurveyHandler
 from handlers.admin_handlers import AdminHandler
 from handlers.edit_handlers import EditHandler
 from handlers.message_handlers import MessageHandler as CustomMessageHandler
+from handlers.post_handlers import PostHandler
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -266,4 +267,125 @@ def create_message_handlers(message_handler: CustomMessageHandler, admin_ids: li
             CommandHandler("cancel", message_handler.cancel_editing)
         ],
         name="message_editing_conversation"
-    ) 
+    )
+
+def create_post_handlers(post_handler: PostHandler, admin_ids: list) -> list:
+    """Создание обработчиков для постов"""
+    logger.info("Создание обработчиков постов")
+    
+    return [
+        ConversationHandler(
+            entry_points=[
+                CommandHandler("create_post", post_handler.create_post, 
+                            filters=filters.User(user_id=admin_ids))
+            ],
+            states={
+                CREATING_POST: [
+                    TelegramMessageHandler(
+                        filters.TEXT & ~filters.COMMAND & ~filters.Text(["❌ Отмена"]),
+                        post_handler.handle_post_text
+                    ),
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                ENTERING_POST_TEXT: [
+                    TelegramMessageHandler(
+                        filters.TEXT & ~filters.COMMAND & ~filters.Text(["❌ Отмена"]),
+                        post_handler.handle_post_content
+                    ),
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                ADDING_POST_IMAGE: [
+                    TelegramMessageHandler(
+                        filters.TEXT & filters.Text(["📷 Прикрепить изображение", "⏭️ Пропустить", "❌ Отмена"]),
+                        post_handler.handle_image_option
+                    ),
+                    TelegramMessageHandler(
+                        (filters.PHOTO | (filters.Document.IMAGE)) & ~filters.COMMAND,
+                        post_handler.handle_image_upload
+                    ),
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                ADDING_URL_BUTTON: [
+                    TelegramMessageHandler(
+                        filters.TEXT & filters.Text(["🔗 Добавить кнопку со ссылкой", "⏭️ Пропустить", "❌ Отмена"]),
+                        post_handler.handle_button_option
+                    ),
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                ENTERING_BUTTON_TEXT: [
+                    TelegramMessageHandler(
+                        filters.TEXT & ~filters.COMMAND & ~filters.Text(["❌ Отмена"]),
+                        post_handler.handle_button_text
+                    ),
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                ENTERING_BUTTON_URL: [
+                    # Для обычного создания поста
+                    TelegramMessageHandler(
+                        ~filters.Text(["❌ Отмена"]) & ~filters.COMMAND & filters.TEXT,
+                        post_handler.handle_button_url,
+                        filters.ChatType.PRIVATE & ~filters.UpdateType.EDITED_MESSAGE
+                    ),
+                    # Для отмены создания поста
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                CONFIRMING_POST: [
+                    TelegramMessageHandler(
+                        filters.TEXT & filters.Text(["✅ Подтвердить", "🔄 Начать заново", "❌ Отмена"]),
+                        post_handler.handle_post_confirmation
+                    ),
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                CONFIRMING_SEND_TO_ALL: [
+                    TelegramMessageHandler(
+                        filters.TEXT & filters.Text(["📨 Отправить всем пользователям", "⏭️ Не отправлять", "❌ Отмена"]),
+                        post_handler.handle_send_to_all_confirmation
+                    ),
+                    TelegramMessageHandler(
+                        filters.Text(["❌ Отмена"]),
+                        post_handler.cancel_post
+                    ),
+                ],
+                # Новые состояния для редактирования постов
+                SELECTING_POST_ACTION: [
+                    CallbackQueryHandler(post_handler.handle_post_callback)
+                ],
+                CONFIRMING_POST_DELETE: [
+                    CallbackQueryHandler(post_handler.handle_post_callback)
+                ],
+            },
+            fallbacks=[
+                CommandHandler('cancel', post_handler.cancel_post),
+                TelegramMessageHandler(filters.Text(["❌ Отмена"]), post_handler.cancel_post),
+            ],
+            allow_reentry=True,
+            name="post_conversation"
+        ),
+        # Обработчик для просмотра списка постов
+        CommandHandler('list_posts', post_handler.list_posts, 
+                      filters=filters.User(user_id=admin_ids)),
+        # Обработчик для управления постами (новый)
+        CommandHandler('manage_posts', post_handler.manage_posts,
+                      filters=filters.User(user_id=admin_ids)),
+    ] 

@@ -8,7 +8,8 @@ import sys
 import os
 from telegram.ext import (
     Application, CommandHandler,
-    ConversationHandler, filters
+    ConversationHandler, filters, CallbackQueryHandler,
+    MessageHandler as TelegramMessageHandler
 )
 from telegram.request import HTTPXRequest
 
@@ -20,11 +21,13 @@ from handlers.survey_handlers import SurveyHandler
 from handlers.admin_handlers import AdminHandler
 from handlers.edit_handlers import EditHandler
 from handlers.message_handlers import MessageHandler as MessageEditHandler
+from handlers.post_handlers import PostHandler
 from handlers.conversation_handlers import (
     create_survey_handler,
     create_admin_handlers,
     create_edit_handlers,
-    create_message_handlers
+    create_message_handlers,
+    create_post_handlers
 )
 
 # Настройка логирования
@@ -74,6 +77,7 @@ async def main():
     admin_handler = AdminHandler(sheets, application)
     edit_handler = EditHandler(sheets, application)
     message_handler = MessageEditHandler(sheets, application)
+    post_handler = PostHandler(sheets, application)
     
     # Настройка команд бота
     await setup_commands(application, admin_ids)
@@ -83,6 +87,7 @@ async def main():
     admin_handlers = create_admin_handlers(admin_handler, admin_ids)
     edit_handlers = create_edit_handlers(edit_handler, admin_ids)
     message_conv_handler = create_message_handlers(message_handler, admin_ids)
+    post_handlers = create_post_handlers(post_handler, admin_ids)
     
     # Добавление обработчиков в приложение
     application.add_handler(survey_conv_handler)
@@ -97,6 +102,16 @@ async def main():
     
     # Добавляем обработчик сообщений
     application.add_handler(message_conv_handler)
+    
+    # Добавляем обработчики постов
+    for handler in post_handlers:
+        application.add_handler(handler)
+    
+    # Добавляем обработчик колбеков для постов
+    application.add_handler(
+        CallbackQueryHandler(post_handler.handle_post_callback, 
+                            pattern=r"^(send_post:|confirm_send:|cancel_posts|delete_post:|confirm_delete:|post_help|manage_posts_back)")
+    )
     
     # Добавление обработчиков для административных команд
     application.add_handler(CommandHandler("restart", survey_handler.restart, 

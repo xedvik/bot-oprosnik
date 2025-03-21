@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filt
 from models.states import *
 from utils.sheets import GoogleSheets
 from handlers.base_handler import BaseHandler
+from utils.helpers import setup_commands  # Импортируем функцию setup_commands
 
 # Настройка логирования
 logger = logging.getLogger(__name__)

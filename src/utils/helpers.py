@@ -49,6 +49,13 @@ async def setup_commands(application: Application, admin_ids: list):
         BotCommand("messages", "Редактировать системные сообщения"),
     ]
     
+    # Команды для работы с постами
+    post_commands = [
+        BotCommand("create_post", "Создать новый пост"),
+        BotCommand("list_posts", "Показать список постов"),
+        BotCommand("manage_posts", "Управление постами (редактирование, удаление)"),
+    ]
+    
     # Системные команды
     system_commands = [
         BotCommand("start", "Начать опрос"),
@@ -61,6 +68,7 @@ async def setup_commands(application: Application, admin_ids: list):
         question_commands +
         admin_management_commands +
         message_commands +
+        post_commands +
         data_commands
     )
 
@@ -105,3 +113,25 @@ async def setup_commands(application: Application, admin_ids: list):
 def is_admin(user_id: int, admin_ids: list) -> bool:
     """Проверка, является ли пользователь администратором"""
     return user_id in admin_ids 
+
+def get_admin_commands_description() -> str:
+    """Получение списка доступных команд для администраторов"""
+    commands = [
+        "/start - Перезапустить бота",
+        "/stats - Показать статистику опроса",
+        "/questions - Показать список вопросов",
+        "/edit_questions - Редактировать вопросы",
+        "/add_question - Добавить вопрос",
+        "/delete_question - Удалить вопрос",
+        "/edit_message - Редактировать системные сообщения",
+        "/view_users - Просмотр списка пользователей",
+        "/reset_user - Сбросить прогресс пользователя",
+        "/clear_data - Очистить все данные опроса",
+        "/add_admin - Добавить администратора",
+        "/remove_admin - Удалить администратора",
+        "/create_post - Создать новый пост",
+        "/list_posts - Просмотреть список постов",
+        "/manage_posts - Управление постами (отправка, редактирование, удаление)",
+    ]
+    
+    return "\n".join(commands) 

@@ -63,6 +63,9 @@ class GoogleSheets:
             # Инициализируем лист сообщений
             self.initialize_messages_sheet()
             
+            # Инициализируем лист постов
+            self.initialize_posts_sheet()
+            
             # Здесь можно добавить инициализацию других листов при необходимости
             
         except Exception as e:
@@ -398,7 +401,7 @@ class GoogleSheets:
             # Пропускаем заголовок
             if data and len(data) > 0:
                 data = data[1:]
-            
+                
             # Извлекаем ID админов
             admin_ids = []
             for row in data:
@@ -424,6 +427,34 @@ class GoogleSheets:
             env_admins = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
             logger.info(f"Используем админов из переменной окружения: {env_admins}")
             return env_admins
+    
+    def get_admins_info(self) -> list:
+        """Получает полную информацию об администраторах (ID, имя, описание)"""
+        try:
+            logger.info("Получение информации об администраторах")
+            
+            # Получаем данные из листа администраторов
+            admins_sheet = self.sheet.worksheet(ADMINS_SHEET)
+            data = admins_sheet.get_all_values()
+            
+            # Если есть данные, пропускаем заголовки
+            if data and len(data) > 1:
+                data = data[1:]
+            else:
+                return []
+                
+            # Формируем список администраторов с полной информацией
+            admins_info = []
+            for row in data:
+                if len(row) >= 3 and row[0]:  # ID, имя, описание
+                    admins_info.append(row)
+            
+            logger.info(f"Получена информация о {len(admins_info)} администраторах")
+            return admins_info
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении информации об администраторах: {e}")
+            return []
 
     def get_statistics(self) -> list:
         """Получение статистики ответов для вопросов с вариантами"""
@@ -698,4 +729,315 @@ class GoogleSheets:
             
         except Exception as e:
             logger.error(f"Ошибка при обновлении сообщения типа {message_type}: {e}")
+            return False
+
+    def initialize_posts_sheet(self) -> bool:
+        """Инициализация листа постов"""
+        try:
+            logger.info("Инициализация листа постов")
+            
+            # Проверяем, существует ли уже лист с постами
+            try:
+                posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+                logger.info("Лист постов уже существует")
+                
+                # Проверяем и обновляем заголовки для существующего листа
+                current_headers = posts_sheet.row_values(1)
+                if current_headers and len(current_headers) < len(SHEET_HEADERS['posts']):
+                    logger.info("Обновляем структуру таблицы постов")
+                    posts_sheet.update('A1:H1', [SHEET_HEADERS['posts']])
+                    logger.info("Структура таблицы постов обновлена")
+                    
+                    # Мигрируем существующие данные
+                    self.migrate_posts_data()
+                
+            except gspread.exceptions.WorksheetNotFound:
+                # Создаем новый лист для постов
+                posts_sheet = self.sheet.add_worksheet(
+                    title=SHEET_NAMES['posts'],
+                    rows=1000,
+                    cols=10
+                )
+                logger.info("Создан новый лист для постов")
+                
+                # Добавляем заголовки
+                posts_sheet.append_row(SHEET_HEADERS['posts'])
+                logger.info("Добавлены заголовки в лист постов")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации листа постов: {e}")
+            return False
+
+    def migrate_posts_data(self):
+        """Миграция данных в таблице постов для добавления столбца 'Название'"""
+        try:
+            logger.info("Начинаем миграцию данных постов")
+            
+            # Получаем лист с постами
+            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            
+            # Получаем все данные (пропускаем заголовок)
+            data = posts_sheet.get_all_values()
+            if len(data) <= 1:  # Только заголовок или пусто
+                logger.info("Нет данных для миграции")
+                return True
+            
+            # Пропускаем заголовок
+            rows = data[1:]
+            
+            # Обрабатываем каждую строку
+            for i, row in enumerate(rows, start=2):  # начинаем с индекса 2 (после заголовка)
+                if len(row) < 7:  # Пропускаем некорректные строки
+                    continue
+                
+                post_id = row[0]
+                old_text = row[1]  # Старый текст в столбце B
+                
+                # Формируем название (первые 30 символов текста или ID поста)
+                title = f"Пост №{post_id}"
+                if old_text:
+                    title_from_text = old_text[:30].strip()
+                    if title_from_text:
+                        title = title_from_text + ("..." if len(old_text) > 30 else "")
+                
+                # Вставляем новую ячейку с названием (столбец B)
+                posts_sheet.update_cell(i, 2, title)
+                
+                # Если нужно, смещаем остальные данные
+                # Для этого получаем оставшиеся данные и обновляем их
+                remaining_data = row[1:]  # Текст, Изображение, Кнопка (текст), Кнопка (ссылка), Дата создания, Создал
+                if remaining_data:
+                    # Обновляем ячейки C-H
+                    cell_range = f"C{i}:H{i}" if len(remaining_data) >= 6 else f"C{i}:{chr(66+len(remaining_data)+1)}{i}"
+                    posts_sheet.update(cell_range, [remaining_data])
+            
+            logger.info("Миграция данных постов завершена успешно")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при миграции данных постов: {e}")
+            return False
+    
+    def save_post(self, title: str, text: str, image_url: str, button_text: str, button_url: str, admin_id: int) -> int:
+        """Сохранение поста в таблицу"""
+        try:
+            logger.info(f"Сохранение поста от администратора {admin_id}")
+            
+            # Открываем лист с постами
+            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            
+            # Получаем текущую дату и время
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Генерируем уникальный ID для поста
+            post_id = str(int(datetime.now().timestamp()))
+            
+            # Подготавливаем данные для добавления
+            row_data = [post_id, title, text, image_url, button_text, button_url, current_time, str(admin_id)]
+            
+            # Добавляем пост
+            posts_sheet.append_row(row_data)
+            
+            logger.info(f"Пост с ID {post_id} успешно сохранен")
+            return post_id
+            
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении поста: {e}")
+            return 0
+    
+    def get_all_posts(self) -> list:
+        """Получение всех постов из таблицы"""
+        try:
+            logger.info("Получение всех постов")
+            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            
+            # Получаем все данные из таблицы
+            data = posts_sheet.get_all_values()
+            
+            # Пропускаем заголовок
+            if data and len(data) > 0:
+                data = data[1:]
+            
+            # Преобразуем данные в список словарей
+            posts = []
+            for row in data:
+                if len(row) >= 8:  # Новый формат с названием
+                    post = {
+                        'id': row[0],
+                        'title': row[1],
+                        'text': row[2],
+                        'image_url': row[3],
+                        'button_text': row[4],
+                        'button_url': row[5],
+                        'created_at': row[6],
+                        'admin_id': row[7]
+                    }
+                elif len(row) >= 7:  # Старый формат без названия, но с кнопками
+                    post = {
+                        'id': row[0],
+                        'title': 'Пост №' + row[0],  # Генерируем название для старых постов
+                        'text': row[1],
+                        'image_url': row[2],
+                        'button_text': row[3],
+                        'button_url': row[4],
+                        'created_at': row[5],
+                        'admin_id': row[6]
+                    }
+                else:
+                    # Обрабатываем самые старые посты без кнопок
+                    post = {
+                        'id': row[0],
+                        'title': 'Пост №' + row[0],  # Генерируем название
+                        'text': row[1],
+                        'image_url': row[2],
+                        'button_text': '',
+                        'button_url': '',
+                        'created_at': row[3] if len(row) > 3 else '',
+                        'admin_id': row[4] if len(row) > 4 else ''
+                    }
+                posts.append(post)
+            
+            logger.info(f"Получено {len(posts)} постов")
+            return posts
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении постов: {e}")
+            return []
+    
+    def get_post_by_id(self, post_id: str) -> dict:
+        """Получение поста по ID"""
+        try:
+            logger.info(f"Получение поста с ID {post_id}")
+            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            
+            # Находим пост по ID
+            cell = posts_sheet.find(post_id)
+            if not cell:
+                logger.error(f"Пост с ID {post_id} не найден")
+                return {}
+            
+            # Получаем всю строку
+            row_data = posts_sheet.row_values(cell.row)
+            
+            # Преобразуем данные в словарь
+            if len(row_data) >= 8:  # Новый формат с названием
+                post = {
+                    'id': row_data[0],
+                    'title': row_data[1],
+                    'text': row_data[2],
+                    'image_url': row_data[3],
+                    'button_text': row_data[4],
+                    'button_url': row_data[5],
+                    'created_at': row_data[6],
+                    'admin_id': row_data[7]
+                }
+            elif len(row_data) >= 7:  # Старый формат без названия, но с кнопками
+                post = {
+                    'id': row_data[0],
+                    'title': 'Пост №' + row_data[0],  # Генерируем название для старых постов
+                    'text': row_data[1],
+                    'image_url': row_data[2],
+                    'button_text': row_data[3],
+                    'button_url': row_data[4],
+                    'created_at': row_data[5],
+                    'admin_id': row_data[6]
+                }
+            else:
+                # Обрабатываем самые старые посты без кнопок
+                post = {
+                    'id': row_data[0],
+                    'title': 'Пост №' + row_data[0],  # Генерируем название
+                    'text': row_data[1],
+                    'image_url': row_data[2],
+                    'button_text': '',
+                    'button_url': '',
+                    'created_at': row_data[3] if len(row_data) > 3 else '',
+                    'admin_id': row_data[4] if len(row_data) > 4 else ''
+                }
+            
+            logger.info(f"Пост с ID {post_id} успешно получен")
+            return post
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении поста по ID: {e}")
+            return {}
+    
+    def update_post(self, post_id, text=None, image_url=None, button_text=None, button_url=None):
+        """Обновляет существующий пост по ID"""
+        logger.info(f"Обновление поста с ID {post_id}")
+        logger.info(f"Параметры обновления: text={text}, image_url={image_url}, button_text={button_text}, button_url={button_url}")
+        
+        try:
+            # Получаем все посты
+            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            rows = posts_sheet.get_all_values()
+            
+            # Ищем пост по ID
+            row_index = None
+            for idx, row in enumerate(rows[1:], 2):  # Начинаем с 2, так как первая строка - заголовки
+                if len(row) >= 1 and row[0] == str(post_id):
+                    row_index = idx
+                    logger.info(f"Найден пост с ID {post_id} в строке {row_index}")
+                    break
+            
+            if row_index is None:
+                logger.warning(f"Пост с ID {post_id} не найден для обновления")
+                return False
+            
+            # Обновляем только те поля, которые переданы
+            if text is not None:
+                logger.info(f"Обновление текста поста {post_id}: {text[:30]}...")
+                posts_sheet.update_cell(row_index, 2, text)
+            
+            if image_url is not None:
+                logger.info(f"Обновление изображения поста {post_id}")
+                posts_sheet.update_cell(row_index, 3, image_url)
+            
+            if button_text is not None:
+                logger.info(f"Обновление текста кнопки поста {post_id}: {button_text}")
+                posts_sheet.update_cell(row_index, 4, button_text)
+            
+            if button_url is not None:
+                logger.info(f"Обновление URL кнопки поста {post_id}: {button_url}")
+                posts_sheet.update_cell(row_index, 5, button_url)
+            
+            logger.info(f"Пост с ID {post_id} успешно обновлен")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении поста {post_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def delete_post(self, post_id):
+        """Удаляет пост по его ID"""
+        logger.info(f"Удаление поста с ID {post_id}")
+        
+        try:
+            # Получаем все посты
+            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            rows = posts_sheet.get_all_values()
+            
+            # Ищем пост по ID
+            row_index = None
+            for idx, row in enumerate(rows[1:], 2):  # Начинаем с 2, так как первая строка - заголовки
+                if len(row) >= 1 and row[0] == str(post_id):
+                    row_index = idx
+                    break
+            
+            if row_index is None:
+                logger.warning(f"Пост с ID {post_id} не найден для удаления")
+                return False
+            
+            # Удаляем строку
+            posts_sheet.delete_rows(row_index)
+            
+            logger.info(f"Пост с ID {post_id} успешно удален")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при удалении поста: {e}")
             return False 
