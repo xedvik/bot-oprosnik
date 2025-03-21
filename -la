@@ -1,0 +1,57 @@
+[1mdiff --git a/src/handlers/admin_handlers.py b/src/handlers/admin_handlers.py[m
+[1mindex a8a8fd4..4867617 100644[m
+[1m--- a/src/handlers/admin_handlers.py[m
+[1m+++ b/src/handlers/admin_handlers.py[m
+[36m@@ -185,6 +185,54 @@[m [mclass AdminHandler(BaseHandler):[m
+             )[m
+             return ConversationHandler.END[m
+         [m
+[32m+[m[32m        # Если выбрано "Готово", переходим к сохранению вопроса с вариантами[m
+[32m+[m[32m        if choice == "Готово":[m
+[32m+[m[32m            # Проверяем, есть ли варианты ответов[m
+[32m+[m[32m            options = context.user_data.get('options', [])[m
+[32m+[m[32m            if not options:[m
+[32m+[m[32m                await update.message.reply_text([m
+[32m+[m[32m                    "❌ Не указано ни одного варианта ответа. Введите хотя бы один вариант или отмените добавление.",[m
+[32m+[m[32m                    reply_markup=ReplyKeyboardMarkup([[m
+[32m+[m[32m                        [KeyboardButton("❌ Отмена")][m
+[32m+[m[32m                    ], resize_keyboard=True)[m
+[32m+[m[32m                )[m
+[32m+[m[32m                return ADDING_OPTIONS[m
+[32m+[m[41m            [m
+[32m+[m[32m            # Добавляем вопрос с вариантами ответов[m
+[32m+[m[32m            success = self.sheets.add_question(question, options)[m
+[32m+[m[41m            [m
+[32m+[m[32m            if success:[m
+[32m+[m[32m                # Обновляем списки вопросов[m
+[32m+[m[32m                self.questions_with_options = self.sheets.get_questions_with_options()[m
+[32m+[m[32m                self.questions = list(self.questions_with_options.keys())[m
+[32m+[m[41m                [m
+[32m+[m[32m                # Обновляем списки вопросов в других обработчиках[m
+[32m+[m[32m                await self._update_handlers_questions(update)[m
+[32m+[m[41m                [m
+[32m+[m[32m                # Спрашиваем, нужно ли добавить вложенные варианты[m
+[32m+[m[32m                keyboard = [[m
+[32m+[m[32m                    [KeyboardButton("✅ Да, добавить вложенные варианты")],[m
+[32m+[m[32m                    [KeyboardButton("❌ Нет, оставить как есть")][m
+[32m+[m[32m                ][m
+[32m+[m[32m                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)[m
+[32m+[m[41m                [m
+[32m+[m[32m                # Формируем список вариантов ответов для отображения[m
+[32m+[m[32m                options_display = "\n".join(f"• {opt['text']}" for opt in options)[m
+[32m+[m[41m                [m
+[32m+[m[32m                await update.message.reply_text([m
+[32m+[m[32m                    f"✅ Вопрос успешно добавлен:\n{question}\n\nВарианты ответов:\n{options_display}\n\n"[m
+[32m+[m[32m                    "Хотите добавить вложенные варианты ответов к каким-либо из основных вариантов?",[m
+[32m+[m[32m                    reply_markup=reply_markup[m
+[32m+[m[32m                )[m
+[32m+[m[41m                [m
+[32m+[m[32m                return ADDING_NESTED_OPTIONS[m
+[32m+[m[32m            else:[m
+[32m+[m[32m                await update.message.reply_text([m
+[32m+[m[32m                    "❌ Не удалось добавить вопрос",[m
+[32m+[m[32m                    reply_markup=ReplyKeyboardRemove()[m
+[32m+[m[32m                )[m
+[32m+[m[32m                return ConversationHandler.END[m
+[32m+[m[41m        [m
+         # Если был выбран свободный ответ[m

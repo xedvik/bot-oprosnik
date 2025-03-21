@@ -139,22 +139,44 @@ def edit_question_options(self, question_index: int, options: list) -> bool:
         logger.error(f"Ошибка при редактировании вариантов ответов: {e}")
         return False
 
-def delete_question(self, question_index: int) -> bool:
-    """Удаление вопроса из таблицы"""
-    try:
-        logger.info(f"Удаление вопроса с индексом {question_index}")
+def delete_question(self, question_or_index) -> bool:
+    """Удаление вопроса из таблицы
+    
+    Args:
+        question_or_index: Индекс вопроса (число) или текст вопроса (строка)
         
-        # Проверяем, что индекс - это число
-        if not isinstance(question_index, int):
-            try:
-                question_index = int(question_index)
-            except (ValueError, TypeError):
-                logger.error(f"Некорректный индекс вопроса (не число): {question_index}")
-                return False
+    Returns:
+        bool: True если удаление прошло успешно, False в случае ошибки
+    """
+    try:
+        logger.info(f"Запрос на удаление вопроса: {question_or_index}")
         
         questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
+        all_questions = questions_sheet.col_values(1)
         
-        # Учитываем заголовок
+        # Пропускаем заголовок
+        all_questions = all_questions[1:]
+        
+        # Определяем индекс вопроса в зависимости от типа переданного параметра
+        if isinstance(question_or_index, int):
+            # Если передан индекс
+            question_index = question_or_index
+            logger.info(f"Получен числовой индекс вопроса: {question_index}")
+            
+            # Проверяем, что индекс находится в допустимом диапазоне
+            if question_index < 0 or question_index >= len(all_questions):
+                logger.error(f"Индекс вопроса {question_index} вне допустимого диапазона (0-{len(all_questions)-1})")
+                return False
+        else:
+            # Если передан текст вопроса
+            try:
+                question_index = all_questions.index(question_or_index)
+                logger.info(f"Найден вопрос по тексту: {question_or_index}, индекс: {question_index}")
+            except ValueError:
+                logger.error(f"Вопрос не найден: {question_or_index}")
+                return False
+        
+        # Учитываем заголовок при удалении строки (индексация с 1 в таблице)
         row_index = question_index + 2  # +1 для индексации с 1, +1 для заголовка
         
         # Удаляем строку
@@ -163,11 +185,12 @@ def delete_question(self, question_index: int) -> bool:
         # Обновляем структуру других листов
         self.update_sheets_structure()
         
-        logger.info(f"Вопрос с индексом {question_index} успешно удален")
+        logger.info(f"Вопрос успешно удален: {question_or_index}")
         return True
         
     except Exception as e:
         logger.error(f"Ошибка при удалении вопроса: {e}")
+        logger.exception(e)
         return False
 
 def clear_answers_and_stats(self) -> bool:

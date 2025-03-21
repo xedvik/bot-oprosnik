@@ -185,6 +185,54 @@ class AdminHandler(BaseHandler):
             )
             return ConversationHandler.END
         
+        # Если выбрано "Готово", переходим к сохранению вопроса с вариантами
+        if choice == "Готово":
+            # Проверяем, есть ли варианты ответов
+            options = context.user_data.get('options', [])
+            if not options:
+                await update.message.reply_text(
+                    "❌ Не указано ни одного варианта ответа. Введите хотя бы один вариант или отмените добавление.",
+                    reply_markup=ReplyKeyboardMarkup([
+                        [KeyboardButton("❌ Отмена")]
+                    ], resize_keyboard=True)
+                )
+                return ADDING_OPTIONS
+            
+            # Добавляем вопрос с вариантами ответов
+            success = self.sheets.add_question(question, options)
+            
+            if success:
+                # Обновляем списки вопросов
+                self.questions_with_options = self.sheets.get_questions_with_options()
+                self.questions = list(self.questions_with_options.keys())
+                
+                # Обновляем списки вопросов в других обработчиках
+                await self._update_handlers_questions(update)
+                
+                # Спрашиваем, нужно ли добавить вложенные варианты
+                keyboard = [
+                    [KeyboardButton("✅ Да, добавить вложенные варианты")],
+                    [KeyboardButton("❌ Нет, оставить как есть")]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                # Формируем список вариантов ответов для отображения
+                options_display = "\n".join(f"• {opt['text']}" for opt in options)
+                
+                await update.message.reply_text(
+                    f"✅ Вопрос успешно добавлен:\n{question}\n\nВарианты ответов:\n{options_display}\n\n"
+                    "Хотите добавить вложенные варианты ответов к каким-либо из основных вариантов?",
+                    reply_markup=reply_markup
+                )
+                
+                return ADDING_NESTED_OPTIONS
+            else:
+                await update.message.reply_text(
+                    "❌ Не удалось добавить вопрос",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+        
         # Если был выбран свободный ответ
         if context.user_data.get('free_form'):
             # Добавляем вопрос без вариантов ответов
@@ -212,63 +260,30 @@ class AdminHandler(BaseHandler):
             context.user_data.clear()
             return ConversationHandler.END
         
-        # Если был выбран вариант с вариантами ответов
-        # Разделяем варианты ответов и создаем структуру для вопроса
-        options_text = choice.strip()
+        # Добавляем вариант ответа в список
+        if 'options' not in context.user_data:
+            context.user_data['options'] = []
+            
+        # Добавляем новый вариант
+        context.user_data['options'].append({"text": choice, "sub_options": []})
         
-        # Разбор вариантов ответов
-        if '\n' in options_text:
-            # Многострочный ввод - каждая строка это вариант
-            options_raw = [opt.strip() for opt in options_text.split('\n') if opt.strip()]
-        else:
-            # Однострочный ввод - варианты разделены запятыми
-            options_raw = [opt.strip() for opt in options_text.split(',') if opt.strip()]
+        # Показываем текущие варианты и предлагаем добавить еще
+        options_list = "\n".join([f"{i+1}. {opt['text']}" for i, opt in enumerate(context.user_data['options'])])
         
-        # Преобразуем в формат с поддержкой вложенных вариантов
-        options = []
-        for opt in options_raw:
-            options.append({"text": opt, "sub_options": []})
+        keyboard = [
+            [KeyboardButton("Готово")],
+            [KeyboardButton("❌ Отмена")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
-        # Добавляем вопрос с вариантами ответов
-        success = self.sheets.add_question(question, options)
+        await update.message.reply_text(
+            f"✅ Вариант добавлен: {choice}\n\n"
+            f"Текущие варианты ответов:\n{options_list}\n\n"
+            "Введите следующий вариант или нажмите 'Готово', когда закончите:",
+            reply_markup=reply_markup
+        )
         
-        if success:
-            # Обновляем списки вопросов
-            self.questions_with_options = self.sheets.get_questions_with_options()
-            self.questions = list(self.questions_with_options.keys())
-            
-            # Обновляем списки вопросов в других обработчиках
-            await self._update_handlers_questions(update)
-            
-            # Спрашиваем, нужно ли добавить вложенные варианты
-            keyboard = [
-                [KeyboardButton("✅ Да, добавить вложенные варианты")],
-                [KeyboardButton("❌ Нет, оставить как есть")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            # Формируем список вариантов ответов для отображения
-            options_display = "\n".join(f"• {opt['text']}" for opt in options)
-            
-            await update.message.reply_text(
-                f"✅ Вопрос успешно добавлен:\n{question}\n\nВарианты ответов:\n{options_display}\n\n"
-                "Хотите добавить вложенные варианты ответов к каким-либо из основных вариантов?",
-                reply_markup=reply_markup
-            )
-            
-            # Сохраняем варианты для дальнейшего использования
-            context.user_data['options'] = options
-            
-            return ADDING_NESTED_OPTIONS
-        else:
-            await update.message.reply_text(
-                "❌ Не удалось добавить вопрос",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        
-        # Очищаем состояние
-        context.user_data.clear()
-        return ConversationHandler.END
+        return ADDING_OPTIONS
     
     async def handle_nested_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка добавления вложенных вариантов ответов"""
@@ -331,9 +346,15 @@ class AdminHandler(BaseHandler):
             context.user_data.pop('selecting_parent_option', None)
             
             # Запрашиваем ввод вложенного варианта
+            keyboard = [
+                [KeyboardButton("✨ Сделать свободным")],
+                [KeyboardButton("❌ Отмена")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
             await update.message.reply_text(
-                f"Введите вложенный вариант для '{choice}':",
-                reply_markup=ReplyKeyboardRemove()
+                f"Введите вложенный вариант для '{choice}' или выберите 'Сделать свободным':",
+                reply_markup=reply_markup
             )
             
             # Инициализируем список вложенных вариантов
@@ -408,6 +429,71 @@ class AdminHandler(BaseHandler):
                     )
                     return ConversationHandler.END
             
+            # Если выбрана опция "Сделать свободным"
+            if choice == "✨ Сделать свободным":
+                # Сохраняем пустой список вложенных вариантов (свободный ответ)
+                question = context.user_data['current_question']
+                parent_option = context.user_data['parent_option']
+                
+                # Получаем номер вопроса
+                question_num = -1
+                for i, q in enumerate(self.questions):
+                    if q == question:
+                        question_num = i
+                        break
+                
+                if question_num == -1:
+                    await update.message.reply_text(
+                        "❌ Не удалось найти вопрос.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return ConversationHandler.END
+                
+                # Получаем текущие варианты
+                current_options = self.questions_with_options[question]
+                
+                # Находим родительский вариант и устанавливаем пустой список подвариантов
+                for opt in current_options:
+                    if opt["text"] == parent_option:
+                        opt["sub_options"] = []
+                        break
+                
+                # Сохраняем обновленные варианты
+                success = self.sheets.edit_question_options(question_num, current_options)
+                
+                if success:
+                    # Обновляем список вопросов
+                    self.questions_with_options = self.sheets.get_questions_with_options()
+                    self.questions = list(self.questions_with_options.keys())
+                    
+                    # Обновляем списки вопросов в других обработчиках через application
+                    await self._update_handlers_questions(update)
+                    
+                    # Спрашиваем, нужно ли добавить вложенные варианты к другому варианту
+                    keyboard = [
+                        [KeyboardButton("✅ Да, к другому варианту")],
+                        [KeyboardButton("❌ Нет, завершить")]
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    
+                    await update.message.reply_text(
+                        f"✅ Вариант '{parent_option}' настроен как свободный ответ!\n\n"
+                        "Хотите добавить вложенные варианты к другому основному варианту?",
+                        reply_markup=reply_markup
+                    )
+                    
+                    # Очищаем состояние для возможного добавления к другому варианту
+                    context.user_data.pop('parent_option', None)
+                    context.user_data.pop('sub_options', None)
+                    context.user_data.pop('adding_sub_option', None)
+                    return ADDING_NESTED_OPTIONS
+                else:
+                    await update.message.reply_text(
+                        "❌ Не удалось настроить свободный ответ.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return ConversationHandler.END
+            
             # Если вводим новый вложенный вариант
             if 'sub_options' not in context.user_data:
                 context.user_data['sub_options'] = []
@@ -415,7 +501,9 @@ class AdminHandler(BaseHandler):
             context.user_data['sub_options'].append(choice)
             
             # Запрашиваем следующий вложенный вариант
-            keyboard = [[KeyboardButton("✅ Готово")]]
+            keyboard = [
+                [KeyboardButton("✅ Готово")]
+            ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
             parent_option = context.user_data['parent_option']
@@ -753,30 +841,109 @@ class AdminHandler(BaseHandler):
                 logger.error("Application не найден")
                 return
 
+            # Обновляем собственные списки вопросов перед обновлением других обработчиков
+            old_questions_count = len(self.questions)
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            logger.info(f"Обновлены локальные списки вопросов в AdminHandler. Было: {old_questions_count}, стало: {len(self.questions)}")
+
             # Обновляем списки вопросов в других обработчиках
             for handler in self.application.handlers[0]:
+                # Обновление для SurveyHandler
                 if isinstance(handler, ConversationHandler) and hasattr(handler, 'name') and handler.name == "survey_conversation":
                     # Находим SurveyHandler в entry_points
                     for entry_point in handler.entry_points:
                         if hasattr(entry_point.callback, '__self__'):
                             survey_handler = entry_point.callback.__self__
+                            old_count = len(survey_handler.questions)
                             survey_handler.questions_with_options = self.questions_with_options
                             survey_handler.questions = self.questions
                             
-                            # Обновляем состояния для вопросов
-                            handler.states.update({
-                                f"QUESTION_{i}": [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_handler.handle_answer)]
-                                for i in range(len(self.questions))
-                            })
+                            # Полностью перестраиваем состояния для вопросов
+                            new_states = {}
                             
-                            logger.info("Обновлены списки вопросов и состояния в SurveyHandler")
+                            # Сначала копируем стандартные состояния, не связанные с конкретными вопросами
+                            for state, handlers_list in handler.states.items():
+                                if not state.startswith("QUESTION_") or state in ["WAITING_START", "WAITING_EVENT_INFO", "CONFIRMING", "SUB_OPTIONS"]:
+                                    new_states[state] = handlers_list
+                            
+                            # Затем добавляем состояния для текущих вопросов
+                            for i in range(len(self.questions)):
+                                question_state = f"QUESTION_{i}"
+                                new_states[question_state] = [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_handler.handle_answer)]
+                                # Добавляем состояние для вложенных вариантов
+                                sub_question_state = f"QUESTION_{i}_SUB"
+                                new_states[sub_question_state] = [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_handler.handle_answer)]
+                            
+                            # Заменяем старые состояния новыми
+                            handler.states.clear()
+                            handler.states.update(new_states)
+                            
+                            logger.info(f"Полностью обновлены состояния в SurveyHandler. Было вопросов: {old_count}, стало: {len(self.questions)}")
                             break
+                
+                # Обновление для EditHandler
+                if isinstance(handler, ConversationHandler) and hasattr(handler, 'name') and handler.name == "edit_question_conversation":
+                    # Находим EditHandler в entry_points
+                    for entry_point in handler.entry_points:
+                        if hasattr(entry_point.callback, '__self__'):
+                            edit_handler = entry_point.callback.__self__
+                            old_count = len(edit_handler.questions)
+                            edit_handler.questions_with_options = self.questions_with_options
+                            edit_handler.questions = self.questions
+                            
+                            logger.info(f"Обновлены списки вопросов в EditHandler. Было: {old_count}, стало: {len(self.questions)}")
+                            break
+                
+                # Обновление для DeleteQuestionHandler
+                if isinstance(handler, ConversationHandler) and hasattr(handler, 'name') and handler.name == "delete_question_conversation":
+                    # Находим DeleteQuestionHandler в entry_points
+                    for entry_point in handler.entry_points:
+                        if hasattr(entry_point.callback, '__self__'):
+                            delete_handler = entry_point.callback.__self__
+                            old_count = len(delete_handler.questions)
+                            delete_handler.questions_with_options = self.questions_with_options
+                            delete_handler.questions = self.questions
+                            
+                            logger.info(f"Обновлены списки вопросов в DeleteQuestionHandler. Было: {old_count}, стало: {len(self.questions)}")
+                            break
+                
+                # Обновление для ListQuestionsHandler
+                if isinstance(handler, CommandHandler) and handler.callback.__name__ == "list_questions":
+                    if hasattr(handler.callback, '__self__'):
+                        list_questions_handler = handler.callback.__self__
+                        if hasattr(list_questions_handler, 'questions'):
+                            old_count = len(list_questions_handler.questions)
+                            list_questions_handler.questions_with_options = self.questions_with_options
+                            list_questions_handler.questions = self.questions
+                            logger.info(f"Обновлены списки вопросов в ListQuestionsHandler. Было: {old_count}, стало: {len(self.questions)}")
 
-            logger.info("Списки вопросов успешно обновлены")
+            # Проверяем все группы обработчиков для обновления
+            for group_idx, group in enumerate(self.application.handlers):
+                if group_idx > 0:  # Пропускаем первую группу, которую уже обработали выше
+                    for handler in group:
+                        if isinstance(handler, ConversationHandler) or isinstance(handler, CommandHandler):
+                            if hasattr(handler, 'callback') and hasattr(handler.callback, '__self__'):
+                                handler_instance = handler.callback.__self__
+                            elif hasattr(handler, 'entry_points') and handler.entry_points:
+                                for entry_point in handler.entry_points:
+                                    if hasattr(entry_point.callback, '__self__'):
+                                        handler_instance = entry_point.callback.__self__
+                                        break
+                            else:
+                                continue
+                                
+                            if hasattr(handler_instance, 'questions') and hasattr(handler_instance, 'questions_with_options'):
+                                old_count = len(handler_instance.questions)
+                                handler_instance.questions_with_options = self.questions_with_options
+                                handler_instance.questions = self.questions
+                                logger.info(f"Обновлены списки вопросов в {handler_instance.__class__.__name__} (группа {group_idx}). Было: {old_count}, стало: {len(self.questions)}")
+
+            logger.info(f"Списки вопросов успешно обновлены во всех обработчиках. Итоговое количество вопросов: {len(self.questions)}")
 
         except Exception as e:
             logger.error(f"Ошибка при обновлении списков вопросов: {e}")
-            logger.exception(e) 
+            logger.exception(e)
 
     async def reset_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Сброс прохождения опроса для пользователя"""

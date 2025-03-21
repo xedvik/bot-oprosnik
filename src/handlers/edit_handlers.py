@@ -4,16 +4,23 @@
 
 import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import ContextTypes, ConversationHandler, CommandHandler
 
 from models.states import *
 from handlers.base_handler import BaseHandler
+from utils.sheets import GoogleSheets
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
 class EditHandler(BaseHandler):
     """Обработчики для редактирования вопросов"""
+    
+    def __init__(self, sheets: GoogleSheets, application=None):
+        super().__init__(sheets)
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
+        self.application = application
     
     async def edit_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало редактирования вопроса"""
@@ -260,6 +267,8 @@ class EditHandler(BaseHandler):
         context.user_data.pop('editing_question', None)
         context.user_data.pop('editing_question_num', None)
         
+        await self._update_handlers_questions(update)
+        
         return ConversationHandler.END
 
     async def handle_options_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,7 +303,7 @@ class EditHandler(BaseHandler):
         current_options = self.questions_with_options[question]
         
         # Проверяем, редактируем ли мы подварианты
-        if 'editing_option' in context.user_data:
+        if 'editing_option_index' in context.user_data:
             return await self.handle_sub_options_edit(update, context)
         
         if choice == "➕ Добавить вариант":
@@ -362,6 +371,19 @@ class EditHandler(BaseHandler):
             return EDITING_OPTIONS
         
         elif choice == "✨ Сделать свободным":
+            # Получаем актуальные данные перед изменением
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            # Проверяем, что вопрос существует в актуальном списке
+            if question not in self.questions_with_options:
+                logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+                await update.message.reply_text(
+                    "❌ Ошибка: вопрос не найден в актуальном списке",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+            
             # Удаляем все варианты ответов
             success = self.sheets.edit_question_options(question_num, [])
             
@@ -391,7 +413,28 @@ class EditHandler(BaseHandler):
         elif 'adding_option' in context.user_data:
             # Добавляем новый вариант ответа
             new_option = {"text": choice, "sub_options": []}
+            
+            # Получаем актуальные данные перед изменением
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            # Проверяем, что вопрос существует
+            if question in self.questions_with_options:
+                current_options = self.questions_with_options[question]
+            else:
+                logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+                await update.message.reply_text(
+                    "❌ Ошибка: вопрос не найден в актуальном списке",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Очищаем состояние
+                context.user_data.pop('adding_option', None)
+                return ConversationHandler.END
+                
+            # Добавляем новый вариант к существующим
             new_options = current_options + [new_option]
+            
+            logger.info(f"Добавление варианта '{choice}' к существующим вариантам: {current_options}")
             
             success = self.sheets.edit_question_options(question_num, new_options)
             
@@ -409,12 +452,19 @@ class EditHandler(BaseHandler):
                 
                 # Сохраняем новый вариант для возможного добавления вложенных вариантов
                 context.user_data['editing_option'] = choice
+                # Также сохраняем индекс варианта (последний в списке)
+                context.user_data['editing_option_index'] = len(new_options) - 1
+                # Сохраняем текущий вопрос для последующего добавления вложенных вариантов
+                context.user_data['current_question'] = question
                 
                 await update.message.reply_text(
                     f"✅ Вариант ответа добавлен: {choice}\n\n"
                     "Хотите добавить к нему вложенные варианты ответов?",
                     reply_markup=reply_markup
                 )
+                
+                # Обновляем списки вопросов в других обработчиках
+                await self._update_handlers_questions(update)
                 
                 # Очищаем состояние добавления обычного варианта
                 context.user_data.pop('adding_option', None)
@@ -433,6 +483,23 @@ class EditHandler(BaseHandler):
             if choice == "❌ Отмена":
                 await update.message.reply_text(
                     "❌ Удаление варианта отменено",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Очищаем состояние
+                context.user_data.pop('removing_option', None)
+                return ConversationHandler.END
+            
+            # Получаем актуальные данные перед изменением
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            # Проверяем, что вопрос существует
+            if question in self.questions_with_options:
+                current_options = self.questions_with_options[question]
+            else:
+                logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+                await update.message.reply_text(
+                    "❌ Ошибка: вопрос не найден в актуальном списке",
                     reply_markup=ReplyKeyboardRemove()
                 )
                 # Очищаем состояние
@@ -466,6 +533,9 @@ class EditHandler(BaseHandler):
                         f"✅ Вариант ответа удален: {choice}{sub_options_message}",
                         reply_markup=ReplyKeyboardRemove()
                     )
+                    
+                    # Обновляем списки вопросов в других обработчиках
+                    await self._update_handlers_questions(update)
                 else:
                     await update.message.reply_text(
                         "❌ Не удалось удалить вариант ответа",
@@ -523,7 +593,113 @@ class EditHandler(BaseHandler):
         
         question = context.user_data['editing_question']
         question_num = context.user_data.get('editing_question_num', -1)
+        
+        # Если установлен current_question, используем его вместо editing_question
+        if 'current_question' in context.user_data:
+            question = context.user_data['current_question']
+            # Обновляем editing_question для совместимости
+            context.user_data['editing_question'] = question
+            
+            # Обновляем номер вопроса
+            try:
+                question_num = self.questions.index(question)
+                context.user_data['editing_question_num'] = question_num
+            except ValueError:
+                logger.error(f"Вопрос '{question}' не найден в списке вопросов")
+        
+        # Обновляем список вариантов из базы данных перед обработкой
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
+        
+        # Проверяем, что вопрос все еще существует
+        if question not in self.questions_with_options:
+            await update.message.reply_text(
+                f"❌ Ошибка: вопрос '{question}' не найден в базе данных",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
+            return ConversationHandler.END
+                
         current_options = self.questions_with_options[question]
+        
+        # Вывод информации для отладки
+        logger.info(f"Текущий вопрос: {question}")
+        logger.info(f"Номер вопроса: {question_num}")
+        logger.info(f"Текущие варианты: {current_options}")
+        logger.info(f"Текущий выбор: {choice}")
+        
+        # Обработка кнопки "Добавить еще вложенный вариант"
+        if choice == "➕ Добавить еще вложенный вариант" and 'editing_option' in context.user_data:
+            parent_option_text = context.user_data['editing_option']
+            await update.message.reply_text(
+                f"Введите новый вложенный вариант для '{parent_option_text}':",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data['adding_sub_option'] = True
+            return ADDING_SUB_OPTION
+        
+        # Обработка прямого ввода вложенного варианта
+        if 'adding_sub_option' in context.user_data and choice not in ["✨ Сделать свободным", "❌ Отмена", "➕ Добавить вложенный вариант", "➕ Добавить еще вложенный вариант", "✅ Готово", "➖ Удалить вложенный вариант"]:
+            # Передаем управление в обработчик добавления вложенного варианта
+            logger.info(f"Перенаправление ввода вложенного варианта '{choice}' в handle_add_sub_option")
+            return await self.handle_add_sub_option(update, context)
+        
+        # Специальная обработка для варианта после добавления нового варианта в вопрос
+        if choice == "✅ Да, добавить вложенные варианты" and 'editing_option_index' in context.user_data:
+            option_text = context.user_data['editing_option']
+            option_index = context.user_data['editing_option_index']
+            
+            logger.info(f"Обработка добавления вложенных вариантов к новому варианту: {option_text} с индексом {option_index}")
+            
+            # Обновляем список вариантов для гарантии
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            # Получаем актуальные варианты
+            if question in self.questions_with_options:
+                current_options = self.questions_with_options[question]
+                logger.info(f"Актуальные варианты после обновления: {current_options}")
+            
+            # Проверяем, что вариант есть в списке вариантов
+            parent_found = False
+            parent_option = None
+            for i, opt in enumerate(current_options):
+                if isinstance(opt, dict) and "text" in opt and opt["text"] == option_text:
+                    parent_option = opt
+                    parent_found = True
+                    # Обновляем индекс на случай, если он изменился
+                    context.user_data['editing_option_index'] = i
+                    logger.info(f"Найден родительский вариант: {opt}")
+                    break
+                    
+            if not parent_found:
+                await update.message.reply_text(
+                    f"❌ Ошибка: вариант '{option_text}' не найден в актуальном списке вариантов.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                logger.error(f"Вариант '{option_text}' не найден в актуальном списке: {current_options}")
+                return ConversationHandler.END
+                
+            # Запрашиваем ввод вложенного варианта сразу для найденного варианта
+            keyboard = [
+                [KeyboardButton("✨ Сделать свободным")],
+                [KeyboardButton("❌ Отмена")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                f"Введите вложенный вариант для '{option_text}' или выберите 'Сделать свободным':",
+                reply_markup=reply_markup
+            )
+            
+            # Инициализируем список вложенных вариантов
+            context.user_data['sub_options'] = []
+            context.user_data['adding_sub_option'] = True
+            # Устанавливаем parent_option для совместимости
+            context.user_data['parent_option'] = option_text
+            return ADDING_SUB_OPTION
         
         # Если выбран родительский вариант для добавления вложенных вариантов
         if 'selecting_parent_option' in context.user_data:
@@ -536,52 +712,71 @@ class EditHandler(BaseHandler):
                 context.user_data.pop('selecting_parent_option', None)
                 return ConversationHandler.END
             
-            # Сохраняем выбранный родительский вариант
-            context.user_data['editing_option'] = choice
-            context.user_data.pop('selecting_parent_option', None)
-            
-            # Отображаем существующие вложенные варианты или предлагаем добавить новые
-            parent_option = None
-            for opt in current_options:
+            # Находим индекс выбранного родительского варианта
+            parent_option_index = -1
+            for i, opt in enumerate(current_options):
                 if isinstance(opt, dict) and "text" in opt and opt["text"] == choice:
-                    parent_option = opt
+                    parent_option_index = i
+                    logger.info(f"Найден родительский вариант с индексом {i}: {opt}")
                     break
-            
-            if parent_option:
-                sub_options = parent_option.get("sub_options", [])
-                
-                # Формируем сообщение с текущими вложенными вариантами
-                sub_options_text = ""
-                if sub_options:
-                    for i, sub_opt in enumerate(sub_options):
-                        sub_options_text += f"{i+1}. {sub_opt}\n"
-                    sub_options_text = f"Текущие вложенные варианты для '{choice}':\n\n{sub_options_text}\n"
-                else:
-                    sub_options_text = f"У варианта '{choice}' пока нет вложенных вариантов.\n\n"
-                
-                # Клавиатура с действиями для вложенных вариантов
-                keyboard = [
-                    [KeyboardButton("➕ Добавить вложенный вариант")]
-                ]
-                
-                # Показываем кнопку удаления только если есть что удалять
-                if sub_options:
-                    keyboard.append([KeyboardButton("➖ Удалить вложенный вариант")])
-                
-                keyboard.append([KeyboardButton("❌ Отмена")])
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                
+                    
+            if parent_option_index == -1:
                 await update.message.reply_text(
-                    f"{sub_options_text}Выберите действие:",
-                    reply_markup=reply_markup
-                )
-                return EDITING_SUB_OPTIONS
-            else:
-                await update.message.reply_text(
-                    f"❌ Вариант '{choice}' не найден",
+                    f"❌ Вариант '{choice}' не найден. Пожалуйста, обновите список вопросов и попробуйте снова.",
                     reply_markup=ReplyKeyboardRemove()
                 )
+                logger.error(f"Вариант '{choice}' не найден среди вариантов: {current_options}")
                 return ConversationHandler.END
+                
+            # Сохраняем выбранный родительский вариант и его индекс
+            context.user_data['editing_option'] = choice
+            context.user_data['editing_option_index'] = parent_option_index
+            context.user_data.pop('selecting_parent_option', None)
+            
+            # Получаем родительский вариант по индексу
+            parent_option = current_options[parent_option_index]
+            
+            # Проверяем, что это словарь с полем text
+            if not isinstance(parent_option, dict) or "text" not in parent_option:
+                await update.message.reply_text(
+                    f"❌ Ошибка: некорректный формат варианта",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Очищаем состояние
+                context.user_data.pop('editing_option', None)
+                context.user_data.pop('editing_option_index', None)
+                context.user_data.pop('adding_sub_option', None)
+                return ConversationHandler.END
+            
+            # Формируем сообщение с текущими вложенными вариантами
+            sub_options_text = ""
+            if parent_option.get("sub_options"):
+                for i, sub_opt in enumerate(parent_option["sub_options"]):
+                    sub_options_text += f"{i+1}. {sub_opt}\n"
+            
+            # Клавиатура с действиями для вложенных вариантов
+            keyboard = [
+                [KeyboardButton("➕ Добавить вложенный вариант")]
+            ]
+            
+            # Показываем кнопку удаления только если есть что удалять
+            if parent_option.get("sub_options"):
+                keyboard.append([KeyboardButton("➖ Удалить вложенный вариант")])
+                # Добавляем возможность сделать вложенные варианты свободными
+                keyboard.append([KeyboardButton("✨ Сделать свободным")])
+            # Если вложенных вариантов нет, также показываем кнопку "Сделать свободным"
+            else:
+                keyboard.append([KeyboardButton("✨ Сделать свободным")])
+            
+            keyboard.append([KeyboardButton("❌ Отмена")])
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                f"Текущие вложенные варианты для '{choice}':\n\n{sub_options_text}\n"
+                "Выберите действие:",
+                reply_markup=reply_markup
+            )
+            return EDITING_SUB_OPTIONS
         
         # Обработка действий с вложенными вариантами
         if 'editing_option' in context.user_data:
@@ -622,6 +817,61 @@ class EditHandler(BaseHandler):
                 )
                 # Очищаем состояние
                 context.user_data.pop('editing_option', None)
+                return ConversationHandler.END
+            
+            # Очистка вложенных вариантов (сделать свободным)
+            elif choice == "✨ Сделать свободным":
+                # Получаем родительский вариант по индексу
+                parent_option_index = context.user_data['editing_option_index']
+                
+                # Проверяем, что индекс в допустимом диапазоне
+                if parent_option_index < 0 or parent_option_index >= len(current_options):
+                    await update.message.reply_text(
+                        f"❌ Ошибка: некорректный индекс варианта {parent_option_index}",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    # Очищаем состояние
+                    context.user_data.pop('editing_option', None)
+                    context.user_data.pop('editing_option_index', None)
+                    return ConversationHandler.END
+                
+                # Получаем родительский вариант по индексу
+                parent_option = current_options[parent_option_index]
+                parent_option_text = parent_option["text"]
+                
+                # Очищаем список вложенных вариантов
+                parent_option["sub_options"] = []
+                
+                # Обновляем варианты ответов
+                success = self.sheets.edit_question_options(question_num, current_options)
+                
+                if success:
+                    # Обновляем список вопросов
+                    self.questions_with_options = self.sheets.get_questions_with_options()
+                    self.questions = list(self.questions_with_options.keys())
+                    
+                    await update.message.reply_text(
+                        f"✅ Вложенные варианты для '{parent_option_text}' удалены. Теперь это свободный ответ.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    
+                    # Обновляем списки вопросов в других обработчиках
+                    await self._update_handlers_questions(update)
+                    
+                    # Очищаем состояние
+                    context.user_data.pop('editing_option', None)
+                    context.user_data.pop('editing_option_index', None)
+                    context.user_data.pop('adding_sub_option', None)
+                    return ConversationHandler.END
+                else:
+                    await update.message.reply_text(
+                        "❌ Не удалось обновить вложенные варианты ответов",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                
+                # Очищаем состояние
+                context.user_data.pop('editing_option', None)
+                context.user_data.pop('editing_option_index', None)
                 return ConversationHandler.END
             
             # Удаление вложенного варианта
@@ -672,7 +922,114 @@ class EditHandler(BaseHandler):
         new_sub_option = update.message.text
         logger.info(f"Получен новый вложенный вариант: {new_sub_option}")
         
-        if 'editing_option' not in context.user_data:
+        # Обработка кнопки "Готово"
+        if new_sub_option == "✅ Готово":
+            await update.message.reply_text(
+                "✅ Редактирование вложенных вариантов завершено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
+            context.user_data.pop('adding_sub_option', None)
+            return ConversationHandler.END
+            
+        # Обработка кнопки "Сделать свободным"
+        if new_sub_option == "✨ Сделать свободным":
+            if 'editing_option_index' not in context.user_data:
+                await update.message.reply_text(
+                    "❌ Ошибка: родительский вариант не выбран",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+                
+            parent_option_text = context.user_data['editing_option']
+            parent_option_index = context.user_data['editing_option_index']
+            question = context.user_data['editing_question']
+            question_num = context.user_data.get('editing_question_num', -1)
+            
+            # Обновляем список вариантов из базы данных перед обработкой
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            if question not in self.questions_with_options:
+                await update.message.reply_text(
+                    f"❌ Ошибка: вопрос '{question}' не найден в базе данных",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Очищаем состояние
+                context.user_data.pop('editing_option', None)
+                context.user_data.pop('editing_option_index', None)
+                context.user_data.pop('adding_sub_option', None)
+                return ConversationHandler.END
+                
+            current_options = self.questions_with_options[question]
+            
+            # Проверяем индекс и пытаемся найти родительский вариант
+            if parent_option_index < 0 or parent_option_index >= len(current_options):
+                # Пытаемся найти вариант по тексту
+                parent_found = False
+                for i, opt in enumerate(current_options):
+                    if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
+                        parent_option_index = i
+                        context.user_data['editing_option_index'] = i
+                        parent_found = True
+                        break
+                        
+                if not parent_found:
+                    await update.message.reply_text(
+                        f"❌ Ошибка: вариант '{parent_option_text}' не найден в актуальном списке",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    # Очищаем состояние
+                    context.user_data.pop('editing_option', None)
+                    context.user_data.pop('editing_option_index', None)
+                    context.user_data.pop('adding_sub_option', None)
+                    return ConversationHandler.END
+            
+            # Получаем родительский вариант по индексу
+            parent_option = current_options[parent_option_index]
+            
+            # Очищаем список вложенных вариантов
+            parent_option["sub_options"] = []
+            
+            # Обновляем варианты ответов
+            success = self.sheets.edit_question_options(question_num, current_options)
+            
+            if success:
+                # Обновляем список вопросов
+                self.questions_with_options = self.sheets.get_questions_with_options()
+                self.questions = list(self.questions_with_options.keys())
+                
+                await update.message.reply_text(
+                    f"✅ Вложенный вариант добавлен: {new_sub_option}\n\n"
+                    f"Текущие вложенные варианты для '{parent_option['text']}':\n"
+                    f"{sub_options_text}\n"
+                    "Хотите добавить еще вложенный вариант?",
+                    reply_markup=reply_markup
+                )
+                
+                # Обновляем списки вопросов в других обработчиках
+                await self._update_handlers_questions(update)
+            else:
+                await update.message.reply_text(
+                    "❌ Не удалось добавить вложенный вариант",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                
+            # Очищаем состояние
+            context.user_data.pop('adding_sub_option', None)
+            return ConversationHandler.END
+            
+        # Обработка кнопки "Добавить еще вложенный вариант"
+        if new_sub_option == "➕ Добавить еще вложенный вариант":
+            await update.message.reply_text(
+                f"Введите новый вложенный вариант для '{context.user_data['editing_option']}':",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ADDING_SUB_OPTION
+        
+        if 'editing_option_index' not in context.user_data:
             await update.message.reply_text(
                 "❌ Ошибка: родительский вариант не выбран",
                 reply_markup=ReplyKeyboardRemove()
@@ -680,26 +1037,68 @@ class EditHandler(BaseHandler):
             return ConversationHandler.END
         
         parent_option_text = context.user_data['editing_option']
+        parent_option_index = context.user_data['editing_option_index']
         question = context.user_data['editing_question']
         question_num = context.user_data.get('editing_question_num', -1)
-        current_options = self.questions_with_options[question]
         
-        # Находим родительский вариант
-        parent_option = None
-        parent_index = -1
-        for i, opt in enumerate(current_options):
-            if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
-                parent_option = opt
-                parent_index = i
-                break
+        # Обновляем список вариантов из базы данных перед обработкой
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
         
-        if parent_option is None:
+        # Проверяем, что вопрос все еще существует
+        if question not in self.questions_with_options:
             await update.message.reply_text(
-                f"❌ Вариант '{parent_option_text}' не найден",
+                f"❌ Ошибка: вопрос '{question}' не найден в базе данных",
                 reply_markup=ReplyKeyboardRemove()
             )
             # Очищаем состояние
             context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
+            context.user_data.pop('adding_sub_option', None)
+            return ConversationHandler.END
+            
+        current_options = self.questions_with_options[question]
+        
+        logger.info(f"Текущие варианты в handle_add_sub_option: {current_options}")
+        logger.info(f"Поиск родительского варианта по индексу: {parent_option_index}")
+        
+        # Проверяем, что индекс в допустимом диапазоне
+        if parent_option_index < 0 or parent_option_index >= len(current_options):
+            logger.warning(f"Индекс {parent_option_index} выходит за пределы списка вариантов (размер: {len(current_options)})")
+            
+            # Пытаемся найти вариант по тексту
+            parent_found = False
+            for i, opt in enumerate(current_options):
+                if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
+                    parent_option_index = i
+                    context.user_data['editing_option_index'] = i
+                    parent_found = True
+                    logger.info(f"Найден родительский вариант по тексту: {opt}")
+                    break
+                    
+            if not parent_found:
+                await update.message.reply_text(
+                    f"❌ Ошибка: вариант '{parent_option_text}' не найден в актуальном списке",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Очищаем состояние
+                context.user_data.pop('editing_option', None)
+                context.user_data.pop('editing_option_index', None)
+                context.user_data.pop('adding_sub_option', None)
+                return ConversationHandler.END
+        
+        # Получаем родительский вариант по индексу
+        parent_option = current_options[parent_option_index]
+        
+        # Проверяем, что это словарь с полем text
+        if not isinstance(parent_option, dict) or "text" not in parent_option:
+            await update.message.reply_text(
+                f"❌ Ошибка: некорректный формат варианта",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
             context.user_data.pop('adding_sub_option', None)
             return ConversationHandler.END
         
@@ -716,6 +1115,7 @@ class EditHandler(BaseHandler):
             # Возвращаемся к редактированию вложенных вариантов
             return await self.handle_sub_options_edit(update, context)
         
+        # Добавляем новый подвариант
         parent_option["sub_options"].append(new_sub_option)
         
         # Обновляем варианты ответов
@@ -733,28 +1133,37 @@ class EditHandler(BaseHandler):
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
-            # Формируем сообщение с текущими вложенными вариантами
-            parent_option = None
-            for opt in self.questions_with_options[question]:
-                if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
-                    parent_option = opt
-                    break
+            # Получаем обновленные варианты
+            current_options = self.questions_with_options[question]
             
-            # Отображаем все вложенные варианты с нумерацией
-            sub_options_text = ""
-            if parent_option and parent_option.get("sub_options"):
-                for i, sub_opt in enumerate(parent_option["sub_options"]):
-                    sub_options_text += f"{i+1}. {sub_opt}\n"
-            
-            await update.message.reply_text(
-                f"✅ Вложенный вариант добавлен: {new_sub_option}\n\n"
-                f"Текущие вложенные варианты для '{parent_option_text}':\n"
-                f"{sub_options_text}\n"
-                "Хотите добавить еще вложенный вариант?",
-                reply_markup=reply_markup
-            )
-            
-            return EDITING_SUB_OPTIONS
+            # Убеждаемся, что индекс все еще валиден
+            if parent_option_index < len(current_options):
+                parent_option = current_options[parent_option_index]
+                
+                # Отображаем все вложенные варианты с нумерацией
+                sub_options_text = ""
+                if parent_option.get("sub_options"):
+                    for i, sub_opt in enumerate(parent_option["sub_options"]):
+                        sub_options_text += f"{i+1}. {sub_opt}\n"
+                
+                await update.message.reply_text(
+                    f"✅ Вложенный вариант добавлен: {new_sub_option}\n\n"
+                    f"Текущие вложенные варианты для '{parent_option['text']}':\n"
+                    f"{sub_options_text}\n"
+                    "Хотите добавить еще вложенный вариант?",
+                    reply_markup=reply_markup
+                )
+                
+                # Обновляем списки вопросов в других обработчиках
+                await self._update_handlers_questions(update)
+            else:
+                await update.message.reply_text(
+                    "❌ Ошибка: индекс родительского варианта стал недействительным",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Очищаем состояние
+                context.user_data.pop('adding_sub_option', None)
+                return ConversationHandler.END
         else:
             await update.message.reply_text(
                 "❌ Не удалось добавить вложенный вариант",
@@ -778,37 +1187,67 @@ class EditHandler(BaseHandler):
             context.user_data.pop('removing_sub_option', None)
             return ConversationHandler.END
         
-        if 'editing_option' not in context.user_data:
+        if 'editing_option_index' not in context.user_data:
             await update.message.reply_text(
                 "❌ Ошибка: родительский вариант не выбран",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
         
-        parent_option_text = context.user_data['editing_option']
+        parent_option_index = context.user_data['editing_option_index']
         question = context.user_data['editing_question']
         question_num = context.user_data.get('editing_question_num', -1)
-        current_options = self.questions_with_options[question]
         
-        # Находим родительский вариант
-        parent_option = None
-        for i, opt in enumerate(current_options):
-            if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
-                parent_option = opt
-                break
+        # Обновляем список вариантов из базы данных перед обработкой
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
         
-        if parent_option is None:
+        # Проверяем, что вопрос все еще существует
+        if question not in self.questions_with_options:
             await update.message.reply_text(
-                f"❌ Вариант '{parent_option_text}' не найден",
+                f"❌ Ошибка: вопрос '{question}' не найден в базе данных",
                 reply_markup=ReplyKeyboardRemove()
             )
             # Очищаем состояние
             context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
+            context.user_data.pop('removing_sub_option', None)
+            return ConversationHandler.END
+            
+        current_options = self.questions_with_options[question]
+        
+        logger.info(f"Текущие варианты в handle_remove_sub_option: {current_options}")
+        logger.info(f"Индекс родительского варианта: {parent_option_index}")
+        
+        # Проверяем, что индекс в допустимом диапазоне
+        if parent_option_index < 0 or parent_option_index >= len(current_options):
+            await update.message.reply_text(
+                f"❌ Ошибка: некорректный индекс варианта {parent_option_index}",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
+            context.user_data.pop('removing_sub_option', None)
+            return ConversationHandler.END
+        
+        # Получаем родительский вариант по индексу
+        parent_option = current_options[parent_option_index]
+        
+        # Проверяем, что это словарь с полем text и sub_options
+        if not isinstance(parent_option, dict) or "text" not in parent_option or "sub_options" not in parent_option:
+            await update.message.reply_text(
+                f"❌ Ошибка: некорректный формат варианта",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
             context.user_data.pop('removing_sub_option', None)
             return ConversationHandler.END
         
         # Удаляем выбранный вложенный вариант
-        if "sub_options" in parent_option and choice in parent_option["sub_options"]:
+        if choice in parent_option["sub_options"]:
             parent_option["sub_options"].remove(choice)
             
             # Обновляем варианты ответов
@@ -824,14 +1263,15 @@ class EditHandler(BaseHandler):
                 
                 # Показываем сообщение об успешном удалении
                 await update.message.reply_text(
-                    f"✅ Вложенный вариант удален: {choice}"
+                    f"✅ Подвариант '{choice}' успешно удален.",
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 
-                # Возвращаемся к редактированию подвариантов
-                return await self.handle_sub_options_edit(update, context)
+                # Обновляем списки вопросов в других обработчиках
+                await self._update_handlers_questions(update)
             else:
                 await update.message.reply_text(
-                    "❌ Не удалось удалить вложенный вариант",
+                    "❌ Не удалось удалить подвариант.",
                     reply_markup=ReplyKeyboardRemove()
                 )
         else:
@@ -884,33 +1324,85 @@ class EditHandler(BaseHandler):
         
         if choice == "❌ Отмена":
             await update.message.reply_text(
-                "❌ Удаление отменено",
+                "Удаление вопроса отменено.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
         
         try:
-            # Проверяем, что выбор - это число
-            question_num = int(choice.split('.')[0]) - 1  # -1 потому что нумерация с 1
+            # Извлекаем номер вопроса из строки формата "5. тест"
+            import re
+            match = re.match(r'^(\d+)\.', choice)
+            if match:
+                question_num = int(match.group(1)) - 1  # Преобразуем выбор в индекс массива (начинающийся с 0)
+            else:
+                # Если формат не соответствует ожидаемому, попробуем преобразовать всё как число
+                question_num = int(choice) - 1
+                
+            logger.info(f"Полученный номер вопроса: {question_num}")
             
-            # Проверяем, что номер вопроса в допустимом диапазоне
             if 0 <= question_num < len(self.questions):
-                # Получаем вопрос для удаления
                 question_to_delete = self.questions[question_num]
+                
+                # Запоминаем количество вопросов до удаления
+                old_questions = self.questions.copy()
+                logger.info(f"Вопросов до удаления: {len(old_questions)}")
                 
                 # Удаляем вопрос
                 success = self.sheets.delete_question(question_num)
                 
                 if success:
-                    # Обновляем список вопросов
+                    # Сразу обновляем локальные списки вопросов
                     self.questions_with_options = self.sheets.get_questions_with_options()
                     self.questions = list(self.questions_with_options.keys())
+                    logger.info(f"Вопросов после удаления: {len(self.questions)}")
+                    
+                    # Обновляем списки вопросов во всех обработчиках через AdminHandler
+                    await self._update_handlers_questions(update)
+                    
+                    # Принудительное обновление через application
+                    if self.application:
+                        # Обходим все группы обработчиков
+                        for group_idx, group in enumerate(self.application.handlers):
+                            # Проверяем, что group является итерируемым объектом
+                            if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
+                                logger.warning(f"Группа с индексом {group_idx} не является списком: {type(group)}")
+                                continue
+                            
+                            for handler in group:
+                                if isinstance(handler, ConversationHandler) and hasattr(handler, 'name'):
+                                    logger.info(f"Найден обработчик: {handler.name}")
+                                    if hasattr(handler, 'entry_points'):
+                                        for entry_point in handler.entry_points:
+                                            if hasattr(entry_point.callback, '__self__'):
+                                                handler_instance = entry_point.callback.__self__
+                                                if hasattr(handler_instance, 'questions') and hasattr(handler_instance, 'questions_with_options'):
+                                                    # Обновляем списки вопросов
+                                                    old_len = len(handler_instance.questions) if hasattr(handler_instance, 'questions') else 0
+                                                    handler_instance.questions_with_options = self.sheets.get_questions_with_options()
+                                                    handler_instance.questions = list(handler_instance.questions_with_options.keys())
+                                                    new_len = len(handler_instance.questions)
+                                                    logger.info(f"Принудительно обновлены списки вопросов в {handler_instance.__class__.__name__} (группа {group_idx}). Было: {old_len}, стало: {new_len}")
                     
                     await update.message.reply_text(
                         f"✅ Вопрос успешно удален:\n{question_to_delete}",
                         reply_markup=ReplyKeyboardRemove()
                     )
-                    logger.info(f"Вопрос удален: {question_to_delete}")
+                    
+                    # Дополнительная проверка, что список вопросов обновлен и во всех обработчиках
+                    logger.info(f"Проверка успешного обновления списков вопросов после удаления")
+                    for group_idx, group in enumerate(self.application.handlers):
+                        # Проверяем, что group является итерируемым объектом
+                        if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
+                            continue
+                            
+                        for handler in group:
+                            if isinstance(handler, CommandHandler) and hasattr(handler.callback, '__name__') and handler.callback.__name__ == "list_questions":
+                                list_questions_handler = handler.callback.__self__
+                                if hasattr(list_questions_handler, 'questions'):
+                                    logger.info(f"После удаления в list_questions: {len(list_questions_handler.questions)} вопросов")
+                    
+                    logger.info(f"Удаление вопроса успешно завершено. Осталось вопросов: {len(self.questions)}")
                 else:
                     await update.message.reply_text(
                         "❌ Не удалось удалить вопрос. Пожалуйста, попробуйте позже.",
@@ -926,10 +1418,108 @@ class EditHandler(BaseHandler):
                 )
                 logger.error(f"Некорректный номер вопроса: {question_num}")
                 return ConversationHandler.END
-        except ValueError:
+        except ValueError as e:
             await update.message.reply_text(
-                "❌ Пожалуйста, введите номер вопроса.",
+                "❌ Не удалось распознать номер вопроса. Пожалуйста, выберите вопрос из списка.",
                 reply_markup=ReplyKeyboardRemove()
             )
-            logger.error(f"Не удалось преобразовать выбор в число: {choice}")
-            return ConversationHandler.END 
+            logger.error(f"Не удалось преобразовать выбор в число: {choice}. Ошибка: {e}")
+            return ConversationHandler.END
+
+    async def _update_handlers_questions(self, update: Update):
+        """Вызывает обновление списков вопросов в других обработчиках через AdminHandler"""
+        try:
+            if not self.application:
+                logger.error("Application не найден для обновления обработчиков")
+                return
+
+            # Обновляем свои списки вопросов
+            old_questions_count = len(self.questions)
+            logger.info(f"Начинаем обновление списков вопросов в обработчиках. Текущее количество: {old_questions_count}")
+            
+            # Получаем обновленные списки вопросов
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            logger.info(f"Локальный список вопросов обновлен в EditHandler. Было: {old_questions_count}, стало: {len(self.questions)}")
+            
+            # Флаг для отслеживания обновления list_questions
+            list_questions_handler_updated = False
+            
+            # Поиск AdminHandler для вызова его метода _update_handlers_questions
+            admin_handler = None
+            for group_idx, group in enumerate(self.application.handlers):
+                # Проверяем, что group является итерируемым объектом
+                if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
+                    logger.warning(f"Группа с индексом {group_idx} не является списком: {type(group)}")
+                    continue
+                    
+                for handler in group:
+                    # Проверяем, не является ли это CommandHandler для команды list_questions
+                    if isinstance(handler, CommandHandler) and hasattr(handler.callback, '__name__') and handler.callback.__name__ == "list_questions":
+                        logger.info(f"Найден обработчик для команды list_questions в группе {group_idx}")
+                        list_questions_handler = handler.callback.__self__
+                        if hasattr(list_questions_handler, 'questions'):
+                            old_len = len(list_questions_handler.questions)
+                            list_questions_handler.questions_with_options = self.sheets.get_questions_with_options()
+                            list_questions_handler.questions = list(list_questions_handler.questions_with_options.keys())
+                            logger.info(f"Обновлен список вопросов для команды list_questions. Было: {old_len}, стало: {len(list_questions_handler.questions)}")
+                            list_questions_handler_updated = True
+                    
+                    if isinstance(handler, ConversationHandler) and hasattr(handler, 'name') and handler.name == "add_question_conversation":
+                        for entry_point in handler.entry_points:
+                            if hasattr(entry_point.callback, '__self__'):
+                                handler_instance = entry_point.callback.__self__
+                                if handler_instance.__class__.__name__ == "AdminHandler":
+                                    admin_handler = handler_instance
+                                    logger.info(f"Найден AdminHandler для обновления списков вопросов")
+                                    break
+                        if admin_handler:
+                            break
+                if admin_handler:
+                    break
+            
+            # Вызываем обновление списков вопросов в обработчиках через AdminHandler
+            if admin_handler and hasattr(admin_handler, '_update_handlers_questions'):
+                logger.info(f"Вызываем _update_handlers_questions в AdminHandler")
+                await admin_handler._update_handlers_questions(update)
+                logger.info(f"Списки вопросов успешно обновлены через AdminHandler")
+            else:
+                logger.warning(f"AdminHandler не найден, выполняем принудительное обновление обработчиков")
+                # Принудительное обновление всех обработчиков
+                for group_idx, group in enumerate(self.application.handlers):
+                    # Проверяем, что group является итерируемым объектом
+                    if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
+                        logger.warning(f"Группа с индексом {group_idx} не является списком: {type(group)}")
+                        continue
+                        
+                    for handler in group:
+                        # Проверяем, не является ли это CommandHandler для команды list_questions, если его ещё не обновили
+                        if not list_questions_handler_updated and isinstance(handler, CommandHandler) and hasattr(handler.callback, '__name__') and handler.callback.__name__ == "list_questions":
+                            logger.info(f"Найден обработчик для команды list_questions в группе {group_idx} при принудительном обновлении")
+                            list_questions_handler = handler.callback.__self__
+                            if hasattr(list_questions_handler, 'questions'):
+                                old_len = len(list_questions_handler.questions)
+                                list_questions_handler.questions_with_options = self.sheets.get_questions_with_options()
+                                list_questions_handler.questions = list(list_questions_handler.questions_with_options.keys())
+                                logger.info(f"Обновлен список вопросов для команды list_questions. Было: {old_len}, стало: {len(list_questions_handler.questions)}")
+                                list_questions_handler_updated = True
+                        
+                        if isinstance(handler, ConversationHandler) and hasattr(handler, 'entry_points'):
+                            for entry_point in handler.entry_points:
+                                if hasattr(entry_point.callback, '__self__'):
+                                    handler_instance = entry_point.callback.__self__
+                                    if hasattr(handler_instance, 'questions') and hasattr(handler_instance, 'questions_with_options'):
+                                        old_len = len(handler_instance.questions) if hasattr(handler_instance, 'questions') else 0
+                                        handler_instance.questions_with_options = self.sheets.get_questions_with_options()
+                                        handler_instance.questions = list(handler_instance.questions_with_options.keys())
+                                        new_len = len(handler_instance.questions)
+                                        logger.info(f"Принудительно обновлены списки вопросов в {handler_instance.__class__.__name__} (группа {group_idx}). Было: {old_len}, стало: {new_len}")
+            
+            # Проверяем, был ли обновлен обработчик list_questions
+            if not list_questions_handler_updated:
+                logger.warning("Обработчик команды list_questions не был найден или не обновлен")
+                
+            logger.info(f"Процесс обновления списков вопросов в обработчиках завершен успешно")
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении списков вопросов: {e}")
+            logger.exception(e) 
