@@ -40,26 +40,40 @@ class AdminHandler(BaseHandler):
         for i, question in enumerate(self.questions):
             options = self.questions_with_options[question]
             
-            # Формируем читаемый список вариантов ответов
-            if options:
-                options_list = []
-                for opt in options:
-                    if isinstance(opt, dict) and "text" in opt:
-                        option_text = opt["text"]
-                        # Добавляем информацию о подвариантах
-                        if "sub_options" in opt and opt["sub_options"]:
-                            sub_count = len(opt["sub_options"])
-                            option_text += f" (+{sub_count} подварианта)"
-                        options_list.append(option_text)
-                    else:
-                        # Для обратной совместимости
-                        options_list.append(str(opt))
-                
-                options_text = ", ".join(options_list)
-            else:
-                options_text = "Свободный ответ"
+            # Добавляем номер и текст вопроса
+            questions_text += f"{i+1}. {question}\n"
             
-            questions_text += f"{i+1}. {question}\n   Варианты: {options_text}\n\n"
+            # Формируем информацию о вариантах ответов
+            if not options:
+                questions_text += "   📝 Свободный ответ (без вариантов)\n\n"
+                continue
+                
+            # Формируем читаемый список вариантов ответов
+            options_list = []
+            has_sub_options = False
+            
+            for opt in options:
+                if isinstance(opt, dict) and "text" in opt:
+                    option_text = opt["text"]
+                    # Добавляем информацию о подвариантах
+                    if "sub_options" in opt and opt["sub_options"]:
+                        has_sub_options = True
+                        sub_count = len(opt["sub_options"])
+                        option_text += f" 📑 (+{sub_count} подвар.)"
+                    options_list.append(option_text)
+                else:
+                    # Для обратной совместимости
+                    options_list.append(str(opt))
+            
+            # Вывод типа вопроса в зависимости от наличия подвариантов
+            if has_sub_options:
+                questions_text += "   🔄 Вопрос с подвариантами\n"
+            else:
+                questions_text += "   ✅ Вопрос с вариантами ответов\n"
+                
+            # Выводим список вариантов
+            options_text = ", ".join(options_list)
+            questions_text += f"   Варианты: {options_text}\n\n"
         
         # Отправляем список вопросов
         await update.message.reply_text(

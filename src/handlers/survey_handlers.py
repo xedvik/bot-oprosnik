@@ -134,14 +134,30 @@ class SurveyHandler(BaseHandler):
                 keyboard = []
                 for opt in options:
                     if isinstance(opt, dict) and "text" in opt:
-                        keyboard.append([KeyboardButton(opt["text"])])
+                        option_text = opt["text"]
+                        # Добавляем подсказки о подвариантах
+                        if "sub_options" in opt:
+                            if opt["sub_options"] == []:
+                                option_text += " 📝" # Иконка для свободного подответа
+                            elif opt["sub_options"]:
+                                option_text += " ↓" # Стрелка вниз для подвариантов
+                        keyboard.append([KeyboardButton(option_text)])
                     else:
                         keyboard.append([KeyboardButton(str(opt))])
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                 
+                # Добавляем подсказку о значениях иконок в конце текста вопроса
+                question_text = current_question
+                has_sub_options = any(isinstance(opt, dict) and "text" in opt and 
+                                    ("sub_options" in opt and (opt["sub_options"] == [] or opt["sub_options"])) 
+                                    for opt in options)
+                
+                if has_sub_options:
+                    question_text += "\n\n📝 - свободный ответ, ↓ - с вариантами"
+                
                 logger.info(f"[{user_id}] Отправляем вопрос с вариантами: {current_question}")
                 await update.message.reply_text(
-                    current_question,
+                    question_text,
                     reply_markup=reply_markup
                 )
             else:

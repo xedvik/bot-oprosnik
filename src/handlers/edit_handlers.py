@@ -173,10 +173,15 @@ class EditHandler(BaseHandler):
             for opt in current_options:
                 if isinstance(opt, dict) and "text" in opt:
                     options_text += f"• {opt['text']}"
-                    if opt.get("sub_options"):
-                        options_text += ":\n"
-                        for sub_opt in opt["sub_options"]:
-                            options_text += f"  ↳ {sub_opt}\n"
+                    if "sub_options" in opt:
+                        if opt["sub_options"] == []:
+                            options_text += " 📝 (свободный подответ)\n"
+                        elif opt.get("sub_options"):
+                            options_text += ":\n"
+                            for sub_opt in opt["sub_options"]:
+                                options_text += f"  ↳ {sub_opt}\n"
+                        else:
+                            options_text += "\n"
                     else:
                         options_text += "\n"
                 else:
@@ -412,7 +417,7 @@ class EditHandler(BaseHandler):
         
         elif 'adding_option' in context.user_data:
             # Добавляем новый вариант ответа
-            new_option = {"text": choice, "sub_options": []}
+            new_option = {"text": choice}
             
             # Получаем актуальные данные перед изменением
             self.questions_with_options = self.sheets.get_questions_with_options()
@@ -443,24 +448,9 @@ class EditHandler(BaseHandler):
                 self.questions_with_options = self.sheets.get_questions_with_options()
                 self.questions = list(self.questions_with_options.keys())
                 
-                # Спрашиваем, нужно ли добавить вложенные варианты
-                keyboard = [
-                    [KeyboardButton("✅ Да, добавить вложенные варианты")],
-                    [KeyboardButton("❌ Нет, оставить как есть")]
-                ]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                
-                # Сохраняем новый вариант для возможного добавления вложенных вариантов
-                context.user_data['editing_option'] = choice
-                # Также сохраняем индекс варианта (последний в списке)
-                context.user_data['editing_option_index'] = len(new_options) - 1
-                # Сохраняем текущий вопрос для последующего добавления вложенных вариантов
-                context.user_data['current_question'] = question
-                
                 await update.message.reply_text(
-                    f"✅ Вариант ответа добавлен: {choice}\n\n"
-                    "Хотите добавить к нему вложенные варианты ответов?",
-                    reply_markup=reply_markup
+                    f"✅ Вариант ответа добавлен: {choice}",
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 
                 # Обновляем списки вопросов в других обработчиках
@@ -468,7 +458,7 @@ class EditHandler(BaseHandler):
                 
                 # Очищаем состояние добавления обычного варианта
                 context.user_data.pop('adding_option', None)
-                return EDITING_SUB_OPTIONS
+                return ConversationHandler.END
             else:
                 await update.message.reply_text(
                     "❌ Не удалось добавить вариант ответа",
@@ -567,10 +557,15 @@ class EditHandler(BaseHandler):
             for opt in current_options:
                 if isinstance(opt, dict) and "text" in opt:
                     options_text += f"• {opt['text']}"
-                    if opt.get("sub_options"):
-                        options_text += ":\n"
-                        for sub_opt in opt["sub_options"]:
-                            options_text += f"  ↳ {sub_opt}\n"
+                    if "sub_options" in opt:
+                        if opt["sub_options"] == []:
+                            options_text += " 📝 (свободный подответ)\n"
+                        elif opt.get("sub_options"):
+                            options_text += ":\n"
+                            for sub_opt in opt["sub_options"]:
+                                options_text += f"  ↳ {sub_opt}\n"
+                        else:
+                            options_text += "\n"
                     else:
                         options_text += "\n"
                 else:
@@ -750,9 +745,15 @@ class EditHandler(BaseHandler):
             
             # Формируем сообщение с текущими вложенными вариантами
             sub_options_text = ""
-            if parent_option.get("sub_options"):
+            if parent_option.get("sub_options") == []:
+                sub_options_text = "📝 Свободный ответ (без вариантов)"
+            elif parent_option.get("sub_options"):
                 for i, sub_opt in enumerate(parent_option["sub_options"]):
                     sub_options_text += f"{i+1}. {sub_opt}\n"
+            else:
+                # Инициализируем поле sub_options, если его нет
+                parent_option["sub_options"] = []
+                sub_options_text = "Нет вложенных вариантов"
             
             # Клавиатура с действиями для вложенных вариантов
             keyboard = [
@@ -1002,11 +1003,8 @@ class EditHandler(BaseHandler):
                 self.questions = list(self.questions_with_options.keys())
                 
                 await update.message.reply_text(
-                    f"✅ Вложенный вариант добавлен: {new_sub_option}\n\n"
-                    f"Текущие вложенные варианты для '{parent_option['text']}':\n"
-                    f"{sub_options_text}\n"
-                    "Хотите добавить еще вложенный вариант?",
-                    reply_markup=reply_markup
+                    f"✅ Вложенные варианты для '{parent_option['text']}' удалены. Теперь это свободный ответ.",
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 
                 # Обновляем списки вопросов в других обработчиках
@@ -1145,7 +1143,9 @@ class EditHandler(BaseHandler):
                 if parent_option.get("sub_options"):
                     for i, sub_opt in enumerate(parent_option["sub_options"]):
                         sub_options_text += f"{i+1}. {sub_opt}\n"
-                
+                else:
+                    sub_options_text = "Нет вложенных вариантов"
+            
                 await update.message.reply_text(
                     f"✅ Вложенный вариант добавлен: {new_sub_option}\n\n"
                     f"Текущие вложенные варианты для '{parent_option['text']}':\n"
@@ -1444,19 +1444,34 @@ class EditHandler(BaseHandler):
             
             # Флаг для отслеживания обновления list_questions
             list_questions_handler_updated = False
-            
-            # Поиск AdminHandler для вызова его метода _update_handlers_questions
             admin_handler = None
-            for group_idx, group in enumerate(self.application.handlers):
-                # Проверяем, что group является итерируемым объектом
-                if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
-                    logger.warning(f"Группа с индексом {group_idx} не является списком: {type(group)}")
+            
+            # Перебираем все группы обработчиков в application
+            for group in self.application.handlers.values():
+                if not isinstance(group, list):
                     continue
-                    
+                
                 for handler in group:
-                    # Проверяем, не является ли это CommandHandler для команды list_questions
+                    # Ищем AdminHandler
+                    if hasattr(handler, 'callback') and hasattr(handler.callback, '__self__'):
+                        handler_instance = handler.callback.__self__
+                        if handler_instance.__class__.__name__ == "AdminHandler":
+                            admin_handler = handler_instance
+                            logger.info(f"Найден AdminHandler в обработчике {handler}")
+                            break
+                    
+                    # Ищем ConversationHandler с именем add_question_conversation
+                    if isinstance(handler, ConversationHandler) and hasattr(handler, 'name') and handler.name == "add_question_conversation":
+                        for entry_point in handler.entry_points:
+                            if hasattr(entry_point.callback, '__self__'):
+                                handler_instance = entry_point.callback.__self__
+                                if handler_instance.__class__.__name__ == "AdminHandler":
+                                    admin_handler = handler_instance
+                                    logger.info(f"Найден AdminHandler через ConversationHandler")
+                                    break
+                    
+                    # Ищем CommandHandler для команды list_questions
                     if isinstance(handler, CommandHandler) and hasattr(handler.callback, '__name__') and handler.callback.__name__ == "list_questions":
-                        logger.info(f"Найден обработчик для команды list_questions в группе {group_idx}")
                         list_questions_handler = handler.callback.__self__
                         if hasattr(list_questions_handler, 'questions'):
                             old_len = len(list_questions_handler.questions)
@@ -1464,17 +1479,7 @@ class EditHandler(BaseHandler):
                             list_questions_handler.questions = list(list_questions_handler.questions_with_options.keys())
                             logger.info(f"Обновлен список вопросов для команды list_questions. Было: {old_len}, стало: {len(list_questions_handler.questions)}")
                             list_questions_handler_updated = True
-                    
-                    if isinstance(handler, ConversationHandler) and hasattr(handler, 'name') and handler.name == "add_question_conversation":
-                        for entry_point in handler.entry_points:
-                            if hasattr(entry_point.callback, '__self__'):
-                                handler_instance = entry_point.callback.__self__
-                                if handler_instance.__class__.__name__ == "AdminHandler":
-                                    admin_handler = handler_instance
-                                    logger.info(f"Найден AdminHandler для обновления списков вопросов")
-                                    break
-                        if admin_handler:
-                            break
+                
                 if admin_handler:
                     break
             
@@ -1483,38 +1488,63 @@ class EditHandler(BaseHandler):
                 logger.info(f"Вызываем _update_handlers_questions в AdminHandler")
                 await admin_handler._update_handlers_questions(update)
                 logger.info(f"Списки вопросов успешно обновлены через AdminHandler")
-            else:
-                logger.warning(f"AdminHandler не найден, выполняем принудительное обновление обработчиков")
-                # Принудительное обновление всех обработчиков
-                for group_idx, group in enumerate(self.application.handlers):
-                    # Проверяем, что group является итерируемым объектом
-                    if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
-                        logger.warning(f"Группа с индексом {group_idx} не является списком: {type(group)}")
-                        continue
-                        
-                    for handler in group:
-                        # Проверяем, не является ли это CommandHandler для команды list_questions, если его ещё не обновили
-                        if not list_questions_handler_updated and isinstance(handler, CommandHandler) and hasattr(handler.callback, '__name__') and handler.callback.__name__ == "list_questions":
-                            logger.info(f"Найден обработчик для команды list_questions в группе {group_idx} при принудительном обновлении")
-                            list_questions_handler = handler.callback.__self__
-                            if hasattr(list_questions_handler, 'questions'):
-                                old_len = len(list_questions_handler.questions)
-                                list_questions_handler.questions_with_options = self.sheets.get_questions_with_options()
-                                list_questions_handler.questions = list(list_questions_handler.questions_with_options.keys())
-                                logger.info(f"Обновлен список вопросов для команды list_questions. Было: {old_len}, стало: {len(list_questions_handler.questions)}")
-                                list_questions_handler_updated = True
-                        
-                        if isinstance(handler, ConversationHandler) and hasattr(handler, 'entry_points'):
-                            for entry_point in handler.entry_points:
-                                if hasattr(entry_point.callback, '__self__'):
-                                    handler_instance = entry_point.callback.__self__
-                                    if hasattr(handler_instance, 'questions') and hasattr(handler_instance, 'questions_with_options'):
-                                        old_len = len(handler_instance.questions) if hasattr(handler_instance, 'questions') else 0
-                                        handler_instance.questions_with_options = self.sheets.get_questions_with_options()
-                                        handler_instance.questions = list(handler_instance.questions_with_options.keys())
-                                        new_len = len(handler_instance.questions)
-                                        logger.info(f"Принудительно обновлены списки вопросов в {handler_instance.__class__.__name__} (группа {group_idx}). Было: {old_len}, стало: {new_len}")
+                return
+                
+            # Если AdminHandler не найден, выполняем принудительное обновление
+            logger.warning(f"AdminHandler не найден, выполняем принудительное обновление обработчиков")
             
+            # Обновляем все обработчики напрямую
+            updated_handlers = 0
+            for group in self.application.handlers.values():
+                if not isinstance(group, list):
+                    continue
+                    
+                for handler in group:
+                    handler_updated = False
+                    
+                    # Обновляем CommandHandler для list_questions, если ещё не обновлён
+                    if not list_questions_handler_updated and isinstance(handler, CommandHandler) and hasattr(handler.callback, '__name__') and handler.callback.__name__ == "list_questions":
+                        list_questions_handler = handler.callback.__self__
+                        if hasattr(list_questions_handler, 'questions'):
+                            old_len = len(list_questions_handler.questions)
+                            list_questions_handler.questions_with_options = self.sheets.get_questions_with_options()
+                            list_questions_handler.questions = list(list_questions_handler.questions_with_options.keys())
+                            logger.info(f"Обновлен список вопросов для команды list_questions. Было: {old_len}, стало: {len(list_questions_handler.questions)}")
+                            list_questions_handler_updated = True
+                            handler_updated = True
+                            updated_handlers += 1
+                    
+                    # Обновляем все обработчики с атрибутами questions и questions_with_options
+                    if isinstance(handler, ConversationHandler) and hasattr(handler, 'entry_points'):
+                        for entry_point in handler.entry_points:
+                            if hasattr(entry_point.callback, '__self__'):
+                                handler_instance = entry_point.callback.__self__
+                                if hasattr(handler_instance, 'questions') and hasattr(handler_instance, 'questions_with_options'):
+                                    old_len = len(handler_instance.questions) if hasattr(handler_instance, 'questions') else 0
+                                    handler_instance.questions_with_options = self.sheets.get_questions_with_options()
+                                    handler_instance.questions = list(handler_instance.questions_with_options.keys())
+                                    new_len = len(handler_instance.questions)
+                                    logger.info(f"Обновлены списки вопросов в {handler_instance.__class__.__name__}. Было: {old_len}, стало: {new_len}")
+                                    handler_updated = True
+                                    updated_handlers += 1
+                    
+                    # Обновляем другие обработчики напрямую
+                    if hasattr(handler, 'callback') and hasattr(handler.callback, '__self__'):
+                        handler_instance = handler.callback.__self__
+                        if hasattr(handler_instance, 'questions') and hasattr(handler_instance, 'questions_with_options'):
+                            old_len = len(handler_instance.questions) if hasattr(handler_instance, 'questions') else 0
+                            handler_instance.questions_with_options = self.sheets.get_questions_with_options()
+                            handler_instance.questions = list(handler_instance.questions_with_options.keys())
+                            new_len = len(handler_instance.questions)
+                            if not handler_updated:  # Избегаем повторного логирования
+                                logger.info(f"Обновлены списки вопросов в {handler_instance.__class__.__name__}. Было: {old_len}, стало: {new_len}")
+                                updated_handlers += 1
+            
+            if updated_handlers > 0:
+                logger.info(f"Успешно обновлены списки вопросов в {updated_handlers} обработчиках")
+            else:
+                logger.warning("Не найдено обработчиков для обновления")
+                
             # Проверяем, был ли обновлен обработчик list_questions
             if not list_questions_handler_updated:
                 logger.warning("Обработчик команды list_questions не был найден или не обновлен")
@@ -1522,4 +1552,4 @@ class EditHandler(BaseHandler):
             logger.info(f"Процесс обновления списков вопросов в обработчиках завершен успешно")
         except Exception as e:
             logger.error(f"Ошибка при обновлении списков вопросов: {e}")
-            logger.exception(e) 
+            logger.exception(e)
