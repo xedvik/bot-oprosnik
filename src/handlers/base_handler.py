@@ -100,32 +100,38 @@ class BaseHandler:
         user = update.effective_user
         logger.info(f"Пользователь {user.id} завершил опрос")
         
-        # Получаем сообщение о завершении
+        # Получаем сообщение после опроса
         message_data = self.sheets.get_message('finish')
         formatted_message = message_data["text"].format(username=user.first_name)
+        
+        # Создаем клавиатуру с кнопкой "узнать о мероприятии"
+        keyboard = [
+            [KeyboardButton("ℹ️ Узнать о мероприятии")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         # Проверяем, есть ли изображение для отправки
         image_url = message_data.get("image", "")
         if image_url and image_url.strip():
             try:
-                # Отправляем изображение с подписью
+                # Отправляем изображение с подписью и клавиатурой
                 await update.message.reply_photo(
                     photo=image_url,
                     caption=formatted_message,
-                    reply_markup=ReplyKeyboardRemove()
+                    reply_markup=reply_markup
                 )
             except Exception as e:
                 logger.error(f"Ошибка при отправке изображения: {e}")
-                # В случае ошибки отправляем только текст
+                # В случае ошибки отправляем только текст с клавиатурой
                 await update.message.reply_text(
                     formatted_message,
-                    reply_markup=ReplyKeyboardRemove()
+                    reply_markup=reply_markup
                 )
         else:
-            # Если изображения нет, отправляем только текст
+            # Если изображения нет, отправляем только текст с клавиатурой
             await update.message.reply_text(
                 formatted_message,
-                reply_markup=ReplyKeyboardRemove()
+                reply_markup=reply_markup
             )
         return ConversationHandler.END
         
