@@ -99,6 +99,9 @@ def create_admin_handlers(admin_handler: AdminHandler, admin_ids: list) -> list:
             ],
             ADDING_NESTED_OPTIONS: [
                 TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.handle_nested_options)
+            ],
+            ADDING_FREE_TEXT_PROMPT: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, admin_handler.handle_add_free_text_prompt)
             ]
         },
         fallbacks=[

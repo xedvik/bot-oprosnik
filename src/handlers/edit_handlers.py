@@ -584,50 +584,42 @@ class EditHandler(BaseHandler):
     async def handle_sub_options_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка редактирования вложенных вариантов ответов"""
         choice = update.message.text
-        logger.info(f"Выбрано действие с вложенными вариантами: {choice}")
+        logger.info(f"Выбрано действие для вложенных вариантов: {choice}")
         
-        question = context.user_data['editing_question']
-        question_num = context.user_data.get('editing_question_num', -1)
-        
-        # Если установлен current_question, используем его вместо editing_question
-        if 'current_question' in context.user_data:
-            question = context.user_data['current_question']
-            # Обновляем editing_question для совместимости
-            context.user_data['editing_question'] = question
+        if 'editing_question' not in context.user_data or 'editing_option' not in context.user_data:
+            logger.error("Ошибка: editing_question или editing_option отсутствуют в context.user_data")
+            await update.message.reply_text(
+                "❌ Ошибка: вопрос или вариант не выбраны",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
             
-            # Обновляем номер вопроса
-            try:
-                question_num = self.questions.index(question)
-                context.user_data['editing_question_num'] = question_num
-            except ValueError:
-                logger.error(f"Вопрос '{question}' не найден в списке вопросов")
+        question = context.user_data['editing_question']
+        parent_option_text = context.user_data['editing_option']
         
-        # Обновляем список вариантов из базы данных перед обработкой
+        # Получаем номер вопроса
+        question_num = context.user_data.get('editing_question_num', -1)
+        logger.info(f"Редактирование вложенных вариантов для вопроса '{question}', вариант '{parent_option_text}', индекс вопроса {question_num}")
+        
+        # Получаем актуальные данные перед изменением
         self.questions_with_options = self.sheets.get_questions_with_options()
         self.questions = list(self.questions_with_options.keys())
         
-        # Проверяем, что вопрос все еще существует
-        if question not in self.questions_with_options:
+        # Проверяем, что вопрос существует
+        if question in self.questions_with_options:
+            current_options = self.questions_with_options[question]
+        else:
+            logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
             await update.message.reply_text(
-                f"❌ Ошибка: вопрос '{question}' не найден в базе данных",
+                "❌ Ошибка: вопрос не найден в актуальном списке",
                 reply_markup=ReplyKeyboardRemove()
             )
             # Очищаем состояние
             context.user_data.pop('editing_option', None)
-            context.user_data.pop('editing_option_index', None)
             return ConversationHandler.END
-                
-        current_options = self.questions_with_options[question]
-        
-        # Вывод информации для отладки
-        logger.info(f"Текущий вопрос: {question}")
-        logger.info(f"Номер вопроса: {question_num}")
-        logger.info(f"Текущие варианты: {current_options}")
-        logger.info(f"Текущий выбор: {choice}")
-        
-        # Обработка кнопки "Добавить еще вложенный вариант"
-        if choice == "➕ Добавить еще вложенный вариант" and 'editing_option' in context.user_data:
-            parent_option_text = context.user_data['editing_option']
+            
+        # Добавление нового вложенного варианта
+        if choice == "➕ Добавить вложенный вариант" or choice == "✅ Да, добавить вложенные варианты" or choice == "➕ Добавить еще вложенный вариант":
             await update.message.reply_text(
                 f"Введите новый вложенный вариант для '{parent_option_text}':",
                 reply_markup=ReplyKeyboardRemove()
@@ -635,149 +627,123 @@ class EditHandler(BaseHandler):
             context.user_data['adding_sub_option'] = True
             return ADDING_SUB_OPTION
         
-        # Обработка прямого ввода вложенного варианта
-        if 'adding_sub_option' in context.user_data and choice not in ["✨ Сделать свободным", "❌ Отмена", "➕ Добавить вложенный вариант", "➕ Добавить еще вложенный вариант", "✅ Готово", "➖ Удалить вложенный вариант"]:
-            # Передаем управление в обработчик добавления вложенного варианта
-            logger.info(f"Перенаправление ввода вложенного варианта '{choice}' в handle_add_sub_option")
-            return await self.handle_add_sub_option(update, context)
-        
-        # Специальная обработка для варианта после добавления нового варианта в вопрос
-        if choice == "✅ Да, добавить вложенные варианты" and 'editing_option_index' in context.user_data:
-            option_text = context.user_data['editing_option']
-            option_index = context.user_data['editing_option_index']
-            
-            logger.info(f"Обработка добавления вложенных вариантов к новому варианту: {option_text} с индексом {option_index}")
-            
-            # Обновляем список вариантов для гарантии
-            self.questions_with_options = self.sheets.get_questions_with_options()
-            self.questions = list(self.questions_with_options.keys())
-            
-            # Получаем актуальные варианты
-            if question in self.questions_with_options:
-                current_options = self.questions_with_options[question]
-                logger.info(f"Актуальные варианты после обновления: {current_options}")
-            
-            # Проверяем, что вариант есть в списке вариантов
-            parent_found = False
-            parent_option = None
-            for i, opt in enumerate(current_options):
-                if isinstance(opt, dict) and "text" in opt and opt["text"] == option_text:
-                    parent_option = opt
-                    parent_found = True
-                    # Обновляем индекс на случай, если он изменился
-                    context.user_data['editing_option_index'] = i
-                    logger.info(f"Найден родительский вариант: {opt}")
-                    break
-                    
-            if not parent_found:
-                await update.message.reply_text(
-                    f"❌ Ошибка: вариант '{option_text}' не найден в актуальном списке вариантов.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                logger.error(f"Вариант '{option_text}' не найден в актуальном списке: {current_options}")
-                return ConversationHandler.END
-                
-            # Запрашиваем ввод вложенного варианта сразу для найденного варианта
-            keyboard = [
-                [KeyboardButton("✨ Сделать свободным")],
-                [KeyboardButton("❌ Отмена")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
+        # Продолжение после добавления вложенного варианта
+        elif choice == "✅ Готово":
             await update.message.reply_text(
-                f"Введите вложенный вариант для '{option_text}' или выберите 'Сделать свободным':",
-                reply_markup=reply_markup
+                "✅ Редактирование вложенных вариантов завершено",
+                reply_markup=ReplyKeyboardRemove()
             )
-            
-            # Инициализируем список вложенных вариантов
-            context.user_data['sub_options'] = []
-            context.user_data['adding_sub_option'] = True
-            # Устанавливаем parent_option для совместимости
-            context.user_data['parent_option'] = option_text
-            return ADDING_SUB_OPTION
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            return ConversationHandler.END
         
-        # Если выбран родительский вариант для добавления вложенных вариантов
-        if 'selecting_parent_option' in context.user_data:
-            if choice == "❌ Отмена":
-                await update.message.reply_text(
-                    "❌ Добавление вложенных вариантов отменено",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                # Очищаем состояние
-                context.user_data.pop('selecting_parent_option', None)
-                return ConversationHandler.END
-            
-            # Находим индекс выбранного родительского варианта
-            parent_option_index = -1
-            for i, opt in enumerate(current_options):
-                if isinstance(opt, dict) and "text" in opt and opt["text"] == choice:
-                    parent_option_index = i
-                    logger.info(f"Найден родительский вариант с индексом {i}: {opt}")
-                    break
-                    
-            if parent_option_index == -1:
-                await update.message.reply_text(
-                    f"❌ Вариант '{choice}' не найден. Пожалуйста, обновите список вопросов и попробуйте снова.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                logger.error(f"Вариант '{choice}' не найден среди вариантов: {current_options}")
-                return ConversationHandler.END
-                
-            # Сохраняем выбранный родительский вариант и его индекс
-            context.user_data['editing_option'] = choice
-            context.user_data['editing_option_index'] = parent_option_index
-            context.user_data.pop('selecting_parent_option', None)
-            
+        # Очистка вложенных вариантов (сделать свободным)
+        elif choice == "✨ Сделать свободным":
             # Получаем родительский вариант по индексу
-            parent_option = current_options[parent_option_index]
+            parent_option_index = context.user_data['editing_option_index']
             
-            # Проверяем, что это словарь с полем text
-            if not isinstance(parent_option, dict) or "text" not in parent_option:
+            # Проверяем, что индекс в допустимом диапазоне
+            if parent_option_index < 0 or parent_option_index >= len(current_options):
                 await update.message.reply_text(
-                    f"❌ Ошибка: некорректный формат варианта",
+                    f"❌ Ошибка: некорректный индекс варианта {parent_option_index}",
                     reply_markup=ReplyKeyboardRemove()
                 )
                 # Очищаем состояние
                 context.user_data.pop('editing_option', None)
                 context.user_data.pop('editing_option_index', None)
-                context.user_data.pop('adding_sub_option', None)
                 return ConversationHandler.END
             
-            # Формируем сообщение с текущими вложенными вариантами
-            sub_options_text = ""
-            if parent_option.get("sub_options") == []:
-                sub_options_text = "📝 Свободный ответ (без вариантов)"
-            elif parent_option.get("sub_options"):
-                for i, sub_opt in enumerate(parent_option["sub_options"]):
-                    sub_options_text += f"{i+1}. {sub_opt}\n"
+            # Получаем родительский вариант по индексу
+            parent_option = current_options[parent_option_index]
+            parent_option_text = parent_option["text"]
+            
+            # Очищаем список вложенных вариантов
+            parent_option["sub_options"] = []
+            
+            # Обновляем варианты ответов
+            success = self.sheets.edit_question_options(question_num, current_options)
+            
+            if success:
+                # Обновляем список вопросов
+                self.questions_with_options = self.sheets.get_questions_with_options()
+                self.questions = list(self.questions_with_options.keys())
+                
+                await update.message.reply_text(
+                    f"✅ Вложенные варианты для '{parent_option_text}' удалены. Теперь это свободный ответ.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                
+                # Обновляем списки вопросов в других обработчиках
+                await self._update_handlers_questions(update)
+                
+                # Очищаем состояние
+                context.user_data.pop('editing_option', None)
+                context.user_data.pop('editing_option_index', None)
+                context.user_data.pop('adding_sub_option', None)
+                return ConversationHandler.END
             else:
-                # Инициализируем поле sub_options, если его нет
-                parent_option["sub_options"] = []
-                sub_options_text = "Нет вложенных вариантов"
+                await update.message.reply_text(
+                    "❌ Не удалось обновить вложенные варианты ответов",
+                    reply_markup=ReplyKeyboardRemove()
+                )
             
-            # Клавиатура с действиями для вложенных вариантов
-            keyboard = [
-                [KeyboardButton("➕ Добавить вложенный вариант")]
-            ]
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            context.user_data.pop('editing_option_index', None)
+            return ConversationHandler.END
+        
+        # Добавление вопроса для свободного ответа
+        elif choice == "📝 Добавить вопрос для свободного ответа":
+            parent_option_index = context.user_data.get('editing_option_index', -1)
             
-            # Показываем кнопку удаления только если есть что удалять
-            if parent_option.get("sub_options"):
-                keyboard.append([KeyboardButton("➖ Удалить вложенный вариант")])
-                # Добавляем возможность сделать вложенные варианты свободными
-                keyboard.append([KeyboardButton("✨ Сделать свободным")])
-            # Если вложенных вариантов нет, также показываем кнопку "Сделать свободным"
-            else:
-                keyboard.append([KeyboardButton("✨ Сделать свободным")])
+            # Проверяем индекс или пытаемся найти родительский вариант по тексту
+            if parent_option_index < 0 or parent_option_index >= len(current_options):
+                # Пытаемся найти вариант по тексту
+                parent_found = False
+                for i, opt in enumerate(current_options):
+                    if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
+                        parent_option_index = i
+                        context.user_data['editing_option_index'] = i
+                        parent_found = True
+                        break
+                        
+                if not parent_found:
+                    await update.message.reply_text(
+                        f"❌ Ошибка: вариант '{parent_option_text}' не найден в актуальном списке",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return ConversationHandler.END
             
-            keyboard.append([KeyboardButton("❌ Отмена")])
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            # Получаем родительский вариант
+            parent_option = current_options[parent_option_index]
+            
+            # Проверяем, что это вариант со свободным ответом
+            if not isinstance(parent_option.get("sub_options"), list) or parent_option.get("sub_options") != []:
+                await update.message.reply_text(
+                    f"❌ Ошибка: вариант '{parent_option_text}' не является свободным ответом",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+            
+            # Получаем текущий вопрос для свободного ответа, если он есть
+            current_prompt = parent_option.get("free_text_prompt", "")
             
             await update.message.reply_text(
-                f"Текущие вложенные варианты для '{choice}':\n\n{sub_options_text}\n"
-                "Выберите действие:",
-                reply_markup=reply_markup
+                f"Введите вопрос, который будет показан пользователю при выборе варианта '{parent_option_text}':\n\n"
+                f"Текущий вопрос: {current_prompt if current_prompt else 'Не задан'}",
+                reply_markup=ReplyKeyboardRemove()
             )
-            return EDITING_SUB_OPTIONS
+            return ADDING_FREE_TEXT_PROMPT
+        
+        # Отмена редактирования
+        elif choice == "❌ Отмена":
+            await update.message.reply_text(
+                "❌ Редактирование вложенных вариантов отменено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем состояние
+            context.user_data.pop('editing_option', None)
+            return ConversationHandler.END
         
         # Обработка действий с вложенными вариантами
         if 'editing_option' in context.user_data:
@@ -991,8 +957,33 @@ class EditHandler(BaseHandler):
             # Получаем родительский вариант по индексу
             parent_option = current_options[parent_option_index]
             
-            # Очищаем список вложенных вариантов
-            parent_option["sub_options"] = []
+            # Проверяем, что это словарь с полем text
+            if not isinstance(parent_option, dict) or "text" not in parent_option:
+                await update.message.reply_text(
+                    f"❌ Ошибка: некорректный формат варианта",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Очищаем состояние
+                context.user_data.pop('editing_option', None)
+                context.user_data.pop('editing_option_index', None)
+                context.user_data.pop('adding_sub_option', None)
+                return ConversationHandler.END
+            
+            # Добавляем новый вложенный вариант
+            if "sub_options" not in parent_option:
+                parent_option["sub_options"] = []
+            
+            # Проверяем, что такого варианта еще нет
+            if new_sub_option in parent_option["sub_options"]:
+                await update.message.reply_text(
+                    f"❌ Вложенный вариант '{new_sub_option}' уже существует",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                # Возвращаемся к редактированию вложенных вариантов
+                return await self.handle_sub_options_edit(update, context)
+            
+            # Добавляем новый подвариант
+            parent_option["sub_options"].append(new_sub_option)
             
             # Обновляем варианты ответов
             success = self.sheets.edit_question_options(question_num, current_options)
@@ -1002,173 +993,52 @@ class EditHandler(BaseHandler):
                 self.questions_with_options = self.sheets.get_questions_with_options()
                 self.questions = list(self.questions_with_options.keys())
                 
-                await update.message.reply_text(
-                    f"✅ Вложенные варианты для '{parent_option['text']}' удалены. Теперь это свободный ответ.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
+                # Спрашиваем, нужно ли добавить еще вложенные варианты
+                keyboard = [
+                    [KeyboardButton("➕ Добавить еще вложенный вариант")],
+                    [KeyboardButton("✅ Готово")]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                 
-                # Обновляем списки вопросов в других обработчиках
-                await self._update_handlers_questions(update)
+                # Получаем обновленные варианты
+                current_options = self.questions_with_options[question]
+                
+                # Убеждаемся, что индекс все еще валиден
+                if parent_option_index < len(current_options):
+                    parent_option = current_options[parent_option_index]
+                    
+                    # Отображаем все вложенные варианты с нумерацией
+                    sub_options_text = ""
+                    if parent_option.get("sub_options"):
+                        for i, sub_opt in enumerate(parent_option["sub_options"]):
+                            sub_options_text += f"{i+1}. {sub_opt}\n"
+                    else:
+                        sub_options_text = "Нет вложенных вариантов"
+                
+                    await update.message.reply_text(
+                        f"✅ Вложенный вариант добавлен: {new_sub_option}\n\n"
+                        f"Текущие вложенные варианты для '{parent_option['text']}':\n"
+                        f"{sub_options_text}\n"
+                        "Хотите добавить еще вложенный вариант?",
+                        reply_markup=reply_markup
+                    )
+                    
+                    # Обновляем списки вопросов в других обработчиках
+                    await self._update_handlers_questions(update)
+                else:
+                    await update.message.reply_text(
+                        "❌ Ошибка: индекс родительского варианта стал недействительным",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    # Очищаем состояние
+                    context.user_data.pop('adding_sub_option', None)
+                    return ConversationHandler.END
             else:
                 await update.message.reply_text(
                     "❌ Не удалось добавить вложенный вариант",
                     reply_markup=ReplyKeyboardRemove()
                 )
-                
-            # Очищаем состояние
-            context.user_data.pop('adding_sub_option', None)
-            return ConversationHandler.END
             
-        # Обработка кнопки "Добавить еще вложенный вариант"
-        if new_sub_option == "➕ Добавить еще вложенный вариант":
-            await update.message.reply_text(
-                f"Введите новый вложенный вариант для '{context.user_data['editing_option']}':",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return ADDING_SUB_OPTION
-        
-        if 'editing_option_index' not in context.user_data:
-            await update.message.reply_text(
-                "❌ Ошибка: родительский вариант не выбран",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return ConversationHandler.END
-        
-        parent_option_text = context.user_data['editing_option']
-        parent_option_index = context.user_data['editing_option_index']
-        question = context.user_data['editing_question']
-        question_num = context.user_data.get('editing_question_num', -1)
-        
-        # Обновляем список вариантов из базы данных перед обработкой
-        self.questions_with_options = self.sheets.get_questions_with_options()
-        self.questions = list(self.questions_with_options.keys())
-        
-        # Проверяем, что вопрос все еще существует
-        if question not in self.questions_with_options:
-            await update.message.reply_text(
-                f"❌ Ошибка: вопрос '{question}' не найден в базе данных",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            # Очищаем состояние
-            context.user_data.pop('editing_option', None)
-            context.user_data.pop('editing_option_index', None)
-            context.user_data.pop('adding_sub_option', None)
-            return ConversationHandler.END
-            
-        current_options = self.questions_with_options[question]
-        
-        logger.info(f"Текущие варианты в handle_add_sub_option: {current_options}")
-        logger.info(f"Поиск родительского варианта по индексу: {parent_option_index}")
-        
-        # Проверяем, что индекс в допустимом диапазоне
-        if parent_option_index < 0 or parent_option_index >= len(current_options):
-            logger.warning(f"Индекс {parent_option_index} выходит за пределы списка вариантов (размер: {len(current_options)})")
-            
-            # Пытаемся найти вариант по тексту
-            parent_found = False
-            for i, opt in enumerate(current_options):
-                if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
-                    parent_option_index = i
-                    context.user_data['editing_option_index'] = i
-                    parent_found = True
-                    logger.info(f"Найден родительский вариант по тексту: {opt}")
-                    break
-                    
-            if not parent_found:
-                await update.message.reply_text(
-                    f"❌ Ошибка: вариант '{parent_option_text}' не найден в актуальном списке",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                # Очищаем состояние
-                context.user_data.pop('editing_option', None)
-                context.user_data.pop('editing_option_index', None)
-                context.user_data.pop('adding_sub_option', None)
-                return ConversationHandler.END
-        
-        # Получаем родительский вариант по индексу
-        parent_option = current_options[parent_option_index]
-        
-        # Проверяем, что это словарь с полем text
-        if not isinstance(parent_option, dict) or "text" not in parent_option:
-            await update.message.reply_text(
-                f"❌ Ошибка: некорректный формат варианта",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            # Очищаем состояние
-            context.user_data.pop('editing_option', None)
-            context.user_data.pop('editing_option_index', None)
-            context.user_data.pop('adding_sub_option', None)
-            return ConversationHandler.END
-        
-        # Добавляем новый вложенный вариант
-        if "sub_options" not in parent_option:
-            parent_option["sub_options"] = []
-        
-        # Проверяем, что такого варианта еще нет
-        if new_sub_option in parent_option["sub_options"]:
-            await update.message.reply_text(
-                f"❌ Вложенный вариант '{new_sub_option}' уже существует",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            # Возвращаемся к редактированию вложенных вариантов
-            return await self.handle_sub_options_edit(update, context)
-        
-        # Добавляем новый подвариант
-        parent_option["sub_options"].append(new_sub_option)
-        
-        # Обновляем варианты ответов
-        success = self.sheets.edit_question_options(question_num, current_options)
-        
-        if success:
-            # Обновляем список вопросов
-            self.questions_with_options = self.sheets.get_questions_with_options()
-            self.questions = list(self.questions_with_options.keys())
-            
-            # Спрашиваем, нужно ли добавить еще вложенные варианты
-            keyboard = [
-                [KeyboardButton("➕ Добавить еще вложенный вариант")],
-                [KeyboardButton("✅ Готово")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            # Получаем обновленные варианты
-            current_options = self.questions_with_options[question]
-            
-            # Убеждаемся, что индекс все еще валиден
-            if parent_option_index < len(current_options):
-                parent_option = current_options[parent_option_index]
-                
-                # Отображаем все вложенные варианты с нумерацией
-                sub_options_text = ""
-                if parent_option.get("sub_options"):
-                    for i, sub_opt in enumerate(parent_option["sub_options"]):
-                        sub_options_text += f"{i+1}. {sub_opt}\n"
-                else:
-                    sub_options_text = "Нет вложенных вариантов"
-            
-                await update.message.reply_text(
-                    f"✅ Вложенный вариант добавлен: {new_sub_option}\n\n"
-                    f"Текущие вложенные варианты для '{parent_option['text']}':\n"
-                    f"{sub_options_text}\n"
-                    "Хотите добавить еще вложенный вариант?",
-                    reply_markup=reply_markup
-                )
-                
-                # Обновляем списки вопросов в других обработчиках
-                await self._update_handlers_questions(update)
-            else:
-                await update.message.reply_text(
-                    "❌ Ошибка: индекс родительского варианта стал недействительным",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                # Очищаем состояние
-                context.user_data.pop('adding_sub_option', None)
-                return ConversationHandler.END
-        else:
-            await update.message.reply_text(
-                "❌ Не удалось добавить вложенный вариант",
-                reply_markup=ReplyKeyboardRemove()
-            )
             # Очищаем состояние
             context.user_data.pop('adding_sub_option', None)
             return ConversationHandler.END
@@ -1282,6 +1152,98 @@ class EditHandler(BaseHandler):
         
         # Очищаем состояние
         context.user_data.pop('removing_sub_option', None)
+        return ConversationHandler.END
+
+    async def handle_add_free_text_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка добавления вопроса для свободного ответа"""
+        prompt = update.message.text
+        logger.info(f"Получен вопрос для свободного ответа: {prompt}")
+        
+        if 'editing_question' not in context.user_data or 'editing_option' not in context.user_data:
+            logger.error("Ошибка: editing_question или editing_option отсутствуют в context.user_data")
+            await update.message.reply_text(
+                "❌ Ошибка: вопрос или вариант не выбраны",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+            
+        question = context.user_data['editing_question']
+        parent_option_text = context.user_data['editing_option']
+        parent_option_index = context.user_data.get('editing_option_index', -1)
+        
+        # Получаем номер вопроса
+        question_num = context.user_data.get('editing_question_num', -1)
+        logger.info(f"Добавление вопроса для свободного ответа. Вопрос: '{question}', вариант: '{parent_option_text}', индекс вопроса: {question_num}")
+        
+        # Получаем актуальные данные перед изменением
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
+        
+        # Проверяем, что вопрос существует
+        if question not in self.questions_with_options:
+            logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+            await update.message.reply_text(
+                "❌ Ошибка: вопрос не найден в актуальном списке",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+            
+        current_options = self.questions_with_options[question]
+        
+        # Проверяем, что вариант существует и находим его
+        parent_found = False
+        for i, opt in enumerate(current_options):
+            if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
+                parent_option_index = i
+                context.user_data['editing_option_index'] = i
+                parent_found = True
+                break
+                
+        if not parent_found:
+            await update.message.reply_text(
+                f"❌ Ошибка: вариант '{parent_option_text}' не найден в актуальном списке",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Получаем родительский вариант
+        parent_option = current_options[parent_option_index]
+        
+        # Проверяем, что это вариант со свободным ответом
+        if not isinstance(parent_option.get("sub_options"), list) or parent_option.get("sub_options") != []:
+            await update.message.reply_text(
+                f"❌ Ошибка: вариант '{parent_option_text}' не является свободным ответом",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Добавляем поле free_text_prompt к родительскому варианту
+        parent_option["free_text_prompt"] = prompt
+        
+        # Обновляем варианты ответов
+        success = self.sheets.edit_question_options(question_num, current_options)
+        
+        if success:
+            # Обновляем список вопросов
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            await update.message.reply_text(
+                f"✅ Вопрос для свободного ответа добавлен: '{prompt}'",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+            # Обновляем списки вопросов в других обработчиках
+            await self._update_handlers_questions(update)
+        else:
+            await update.message.reply_text(
+                "❌ Не удалось добавить вопрос для свободного ответа",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+        # Очищаем состояние
+        context.user_data.pop('editing_option', None)
+        context.user_data.pop('editing_option_index', None)
         return ConversationHandler.END
 
     async def delete_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

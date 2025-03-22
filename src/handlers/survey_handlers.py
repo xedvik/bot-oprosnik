@@ -86,8 +86,17 @@ class SurveyHandler(BaseHandler):
             if "sub_options" in parent_option and isinstance(parent_option["sub_options"], list) and parent_option["sub_options"] == []:
                 # Это свободный ответ для вложенного варианта (sub_options явно задан как пустой список)
                 logger.info(f"[{user_id}] Вариант '{parent_answer}' имеет пустой список подвариантов - запрашиваем свободный ответ")
+                
+                # Проверяем, есть ли пользовательский вопрос для свободного ответа
+                custom_prompt = context.user_data.get('free_text_prompt')
+                if custom_prompt:
+                    prompt_text = custom_prompt
+                    logger.info(f"[{user_id}] Используем пользовательский вопрос: {custom_prompt}")
+                else:
+                    prompt_text = f"Введите ваш ответ для варианта '{parent_answer}':"
+                
                 await update.message.reply_text(
-                    f"Введите ваш ответ для варианта '{parent_answer}':\n\n"
+                    f"{prompt_text}\n\n"
                     "Или нажмите кнопку для возврата к основным вариантам:",
                     reply_markup=ReplyKeyboardMarkup([
                         [KeyboardButton("◀️ Назад к основным вариантам")]
@@ -346,6 +355,15 @@ class SurveyHandler(BaseHandler):
                     if sub_options == []:  # Пустой список - свободный ответ
                         # Это свободный ответ (явно указан пустой список)
                         context.user_data['current_parent_answer'] = answer
+                        
+                        # Сохраняем пользовательский вопрос для свободного ответа, если он задан
+                        if "free_text_prompt" in selected_option:
+                            context.user_data['free_text_prompt'] = selected_option["free_text_prompt"]
+                            logger.info(f"[{user_id}] Установлен вопрос для свободного ввода: {selected_option['free_text_prompt']}")
+                        else:
+                            # Если специального вопроса нет, удаляем его из контекста если он был ранее
+                            context.user_data.pop('free_text_prompt', None)
+                            
                         logger.info(f"[{user_id}] Установлен родительский ответ для свободного ввода: {answer}")
                         return await self.send_question(update, context)
                     elif sub_options:  # Непустой список - выбор подварианта
