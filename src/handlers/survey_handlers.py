@@ -555,16 +555,8 @@ class SurveyHandler(BaseHandler):
     
     async def finish_survey(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Завершение опроса и благодарность пользователю"""
-        user_id = update.effective_user.id
-        
-        # Отправляем сообщение о завершении
-        await update.message.reply_text(
-            "Спасибо за прохождение опроса! Ваши ответы сохранены.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
-        logger.info(f"[{user_id}] Опрос завершен, сохранено ответов: {len(context.user_data.get('answers', []))}")
-        return ConversationHandler.END
+        # Вызываем метод базового класса вместо использования своего кода
+        return await super().finish_survey(update, context)
     
     async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показ статистики опроса"""

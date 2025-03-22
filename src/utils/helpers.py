@@ -18,7 +18,8 @@ async def setup_commands(application: Application, admin_ids: list):
     
     # Базовые команды для всех пользователей
     basic_commands = [
-        BotCommand("start", "Зарегистрироваться")
+        BotCommand("start", "Зарегистрироваться"),
+        BotCommand("event_info", "Узнать о мероприятии")
     ]
     
     # Команды для управления вопросами
