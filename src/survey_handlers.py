@@ -20,7 +20,7 @@ class SurveyHandler(BaseHandler):
     async def begin_survey(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало опроса"""
         user_id = update.effective_user.id
-        logger.info(f"Пользователь {user_id} пытается зарегистрироваться")
+        logger.info(f"Пользователь {user_id} пытается Зарегистрироваться")
         
         # Проверяем, проходил ли пользователь опрос
         if self.sheets.has_user_completed_survey(user_id):
@@ -59,100 +59,106 @@ class SurveyHandler(BaseHandler):
         current_question = self.questions[current_question_num]
         options = self.questions_with_options[current_question]
         
-        # Получаем ID пользователя для логов
-        user_id = update.effective_user.id if update.effective_user else "Unknown"
-        
-        # Если есть текущий родительский ответ, ищем его в вариантах текущего вопроса
-        parent_answer = context.user_data.get('current_parent_answer')
-        if parent_answer:
+        # Проверка для вложенных вариантов
+        if 'current_parent_answer' in context.user_data:
+            parent_answer = context.user_data['current_parent_answer']
             parent_option = None
-            sub_options = None
             
-            # Ищем родительский вариант и его подварианты
-            for opt in self.questions_with_options.get(current_question, []):
-                if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_answer:
+            # Найдем родительский вариант
+            for opt in options:
+                if isinstance(opt, dict) and opt.get("text") == parent_answer:
                     parent_option = opt
-                    sub_options = opt.get("sub_options", None)
                     break
             
-            if not parent_option:
-                # Если родительский вариант не найден, это ошибка
-                logger.error(f"[{user_id}] Родительский вариант '{parent_answer}' не найден для вопроса: {current_question}")
-                context.user_data.pop('current_parent_answer', None)
-                # Перейдем к обычной обработке вопроса
-                return await self.send_question(update, context)
-            
-            # Проверка на свободный ответ (пустой список подвариантов)
-            if "sub_options" in parent_option and isinstance(parent_option["sub_options"], list) and parent_option["sub_options"] == []:
-                # Это свободный ответ для вложенного варианта (sub_options явно задан как пустой список)
-                logger.info(f"[{user_id}] Вариант '{parent_answer}' имеет пустой список подвариантов - запрашиваем свободный ответ")
-                await update.message.reply_text(
-                    f"Введите ваш ответ для варианта '{parent_answer}':\n\n"
-                    "Или нажмите кнопку для возврата к основным вариантам:",
-                    reply_markup=ReplyKeyboardMarkup([
-                        [KeyboardButton("◀️ Назад к основным вариантам")]
-                    ], resize_keyboard=True)
-                )
-                return f"QUESTION_{current_question_num}_SUB"
-            
-            # Если sub_options содержит список вариантов, предлагаем выбрать
-            if isinstance(sub_options, list) and sub_options:
-                # Создаем кнопки с вложенными вариантами ответов
-                keyboard = [[KeyboardButton(sub_opt)] for sub_opt in sub_options]
-                keyboard.append([KeyboardButton("◀️ Назад к основным вариантам")])
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            if parent_option:
+                # Проверяем, есть ли вложенные варианты
+                sub_options = parent_option.get("sub_options", [])
                 
-                logger.info(f"[{user_id}] Предлагаем выбрать подварианты для '{parent_answer}': {sub_options}")
-                await update.message.reply_text(
-                    f"Выберите вариант для '{parent_answer}':",
-                    reply_markup=reply_markup
-                )
+                # Добавляем отладочную информацию о структуре родительского варианта
+                logger.info(f"Родительский вариант '{parent_answer}', структура: {parent_option}")
                 
-                return f"QUESTION_{current_question_num}_SUB"
+                # Специальная проверка для некоторых вариантов
+                if parent_answer == "Сторонник партии" or parent_answer == "Гость":
+                    # Считаем этот вариант обычным, без свободного ввода
+                    logger.info(f"[{user_id}] Вариант '{parent_answer}' обрабатывается как обычный вариант (без подвариантов)")
+                    context.user_data.pop('current_parent_answer', None)
+                    # Сохраняем обычный ответ
+                    context.user_data['answers'].append(parent_answer)
+                    logger.info(f"[{user_id}] Сохранен обычный ответ: {parent_answer}")
+                    return await self.send_question(update, context)
+                
+                # Проверка на свободный ответ (пустой список подвариантов)
+                if "sub_options" in parent_option and isinstance(parent_option["sub_options"], list) and parent_option["sub_options"] == []:
+                    # Это свободный ответ для вложенного варианта (sub_options явно задан как пустой список)
+                    logger.info(f"Вариант '{parent_answer}' имеет пустой список подвариантов - свободный ответ")
+                    await update.message.reply_text(
+                        f"Введите ваш ответ для варианта '{parent_answer}':\n\n"
+                        "Или нажмите кнопку для возврата к основным вариантам:",
+                        reply_markup=ReplyKeyboardMarkup([
+                            [KeyboardButton("◀️ Назад к основным вариантам")]
+                        ], resize_keyboard=True)
+                    )
+                    return f"QUESTION_{current_question_num}_SUB"
+                
+                # Если sub_options содержит список вариантов, предлагаем выбрать
+                if isinstance(sub_options, list) and sub_options:
+                    # Создаем кнопки с вложенными вариантами ответов
+                    keyboard = [[KeyboardButton(sub_opt)] for sub_opt in sub_options]
+                    keyboard.append([KeyboardButton("◀️ Назад к основным вариантам")])
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    
+                    await update.message.reply_text(
+                        f"Выберите вариант для '{parent_answer}':",
+                        reply_markup=reply_markup
+                    )
+                    
+                    return f"QUESTION_{current_question_num}_SUB"
+                else:
+                    # sub_options отсутствует, равен None или пуст, но не является свободным ответом
+                    # (ключ sub_options есть, но значение не пустой список)
+                    logger.warning(f"Вариант '{parent_answer}' не имеет подвариантов и не является свободным ответом")
+                    context.user_data.pop('current_parent_answer', None)
+                    # Сохраняем обычный ответ
+                    context.user_data['answers'].append(parent_answer)
+                    logger.info(f"Сохранен обычный ответ (вариант без подвариантов): {parent_answer}")
+                    # Отправляем следующий вопрос
+                    current_question_num += 1
+                    
+                    # Если вопросы закончились, переходим к подтверждению
+                    if current_question_num >= len(self.questions):
+                        return await self.show_confirmation(update, context)
+                    
+                    # Иначе отправляем следующий вопрос
+                    current_question = self.questions[current_question_num]
+                    return await self.send_question(update, context)
             else:
-                # sub_options отсутствует, равен None или пуст, но не является свободным ответом
-                # (ключ sub_options есть, но значение не пустой список)
-                logger.warning(f"[{user_id}] Вариант '{parent_answer}' не имеет подвариантов и не является свободным ответом. sub_options={sub_options}")
+                # Если родительский вариант не найден, очищаем current_parent_answer и показываем обычный вопрос
+                logger.warning(f"Родительский вариант '{parent_answer}' не найден, возвращаемся к обычному вопросу")
                 context.user_data.pop('current_parent_answer', None)
-                # Сохраняем обычный ответ
-                context.user_data['answers'].append(parent_answer)
-                logger.info(f"[{user_id}] Сохранен обычный ответ (вариант без подвариантов): {parent_answer}")
-                # Отправляем следующий вопрос
-                current_question_num += 1
-                
-                # Если вопросы закончились, переходим к подтверждению
-                if current_question_num >= len(self.questions):
-                    return await self.show_confirmation(update, context)
-                
-                # Иначе отправляем следующий вопрос
-                current_question = self.questions[current_question_num]
-                return await self.send_question(update, context)
+        
+        # Отправляем вопрос
+        if options:
+            # Создаем кнопки с вариантами ответов
+            keyboard = []
+            for opt in options:
+                if isinstance(opt, dict) and "text" in opt:
+                    keyboard.append([KeyboardButton(opt["text"])])
+                else:
+                    keyboard.append([KeyboardButton(str(opt))])
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                current_question,
+                reply_markup=reply_markup
+            )
         else:
-            # Отправляем вопрос
-            if options:
-                # Создаем кнопки с вариантами ответов
-                keyboard = []
-                for opt in options:
-                    if isinstance(opt, dict) and "text" in opt:
-                        keyboard.append([KeyboardButton(opt["text"])])
-                    else:
-                        keyboard.append([KeyboardButton(str(opt))])
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                
-                logger.info(f"[{user_id}] Отправляем вопрос с вариантами: {current_question}")
-                await update.message.reply_text(
-                    current_question,
-                    reply_markup=reply_markup
-                )
-            else:
-                # Вопрос со свободным ответом
-                logger.info(f"[{user_id}] Отправляем вопрос со свободным ответом: {current_question}")
-                await update.message.reply_text(
-                    current_question,
-                    reply_markup=ReplyKeyboardRemove()
-                )
-            
-            return f"QUESTION_{current_question_num}"
+            # Вопрос со свободным ответом
+            await update.message.reply_text(
+                current_question,
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        return f"QUESTION_{current_question_num}"
     
     async def handle_answer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка ответов пользователя"""
@@ -229,17 +235,28 @@ class SurveyHandler(BaseHandler):
                     break
             
             if parent_option:
-                # Добавляем отладочную информацию о структуре родительского варианта
-                logger.info(f"[{user_id}] Родительский вариант '{parent_answer}', структура: {parent_option}")
+                # Проверяем, есть ли вложенные варианты
+                sub_options = parent_option.get("sub_options", [])
                 
-                # Специальная проверка для возврата к основным вариантам
+                # Добавляем отладочную информацию о структуре родительского варианта
+                logger.info(f"Родительский вариант '{parent_answer}', структура: {parent_option}")
+                
+                # Специальная проверка для некоторых вариантов
+                if parent_answer == "Сторонник партии" or parent_answer == "Гость":
+                    # Считаем этот вариант обычным, без свободного ввода
+                    logger.info(f"Вариант '{parent_answer}' обрабатывается как обычный вариант (без подвариантов)")
+                    context.user_data.pop('current_parent_answer', None)
+                    # Сохраняем обычный ответ
+                    context.user_data['answers'].append(parent_answer)
+                    logger.info(f"Сохранен обычный ответ: {parent_answer}")
+                    return await self.send_question(update, context)
+                
                 if answer == "◀️ Назад к основным вариантам":
                     # Возвращаемся к основным вариантам
                     context.user_data.pop('current_parent_answer', None)
                     return await self.send_question(update, context)
                 
                 # Проверяем, является ли это свободным ответом для вложенного варианта
-                # Явная проверка на пустой список sub_options (свободный ответ)
                 if "sub_options" in parent_option and isinstance(parent_option["sub_options"], list) and parent_option["sub_options"] == []:
                     # Сохраняем свободный ответ в формате "родительский - введенный"
                     full_answer = f"{parent_answer} - {answer}"
@@ -251,11 +268,8 @@ class SurveyHandler(BaseHandler):
                     # Переходим к следующему вопросу
                     return await self.send_question(update, context)
                 
-                # Проверяем наличие подвариантов
-                sub_options = parent_option.get("sub_options")
-                
-                # Если это не свободный ответ, но у варианта нет подвариантов или они некорректны
-                if sub_options is None or not isinstance(sub_options, list) or not sub_options:
+                # Если это не свободный ответ, проверяем наличие подвариантов
+                if not isinstance(sub_options, list) or not sub_options:
                     # Нет подвариантов или sub_options не является списком, сохраняем основной ответ
                     context.user_data['answers'].append(parent_answer)
                     # Очищаем текущий родительский ответ
@@ -294,53 +308,75 @@ class SurveyHandler(BaseHandler):
                 # Повторно отправляем текущий вопрос
                 return await self.send_question(update, context)
         
-        # Обработка ответов на основные вопросы        
-        # Проверяем, есть ли вариант среди доступных опций
-        available_options = self.questions_with_options.get(current_question, [])
-        
-        # Проверяем, соответствует ли ответ одному из вариантов
-        is_valid_option = False
-        selected_option = None
-        
-        for opt in available_options:
-            if isinstance(opt, dict) and "text" in opt and opt["text"] == answer:
-                is_valid_option = True
-                selected_option = opt
-                # Добавляем отладочную информацию о структуре выбранного варианта
-                logger.info(f"[{user_id}] Выбран вариант: {answer}, структура: {selected_option}")
-                break
-            elif not isinstance(opt, dict) and str(opt) == answer:
-                is_valid_option = True
-                break
-        
-        if not is_valid_option:
-            # Если ответ не соответствует ни одному из вариантов или нет доступных вариантов,
-            # считаем это свободным ответом для вопроса без вариантов
-            context.user_data['answers'].append(answer)
-            logger.info(f"[{user_id}] Сохранен свободный ответ для вопроса без вариантов: {answer}")
-        else:
+        # Обработка для вариантов без вложенных опций
+        if available_options:
+            # Проверяем, соответствует ли ответ одному из вариантов
+            is_valid_option = False
+            selected_option = None
+            
+            for opt in available_options:
+                if isinstance(opt, dict) and "text" in opt and opt["text"] == answer:
+                    is_valid_option = True
+                    selected_option = opt
+                    # Добавляем отладочную информацию о структуре выбранного варианта
+                    logger.info(f"[{user_id}] Выбран вариант: {answer}, структура: {selected_option}")
+                    break
+                elif not isinstance(opt, dict) and str(opt) == answer:
+                    is_valid_option = True
+                    break
+            
+            if not is_valid_option:
+                # Ответ не соответствует ни одному из вариантов
+                keyboard = []
+                for opt in available_options:
+                    if isinstance(opt, dict) and "text" in opt:
+                        keyboard.append([KeyboardButton(opt["text"])])
+                    else:
+                        keyboard.append([KeyboardButton(str(opt))])
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                await update.message.reply_text(
+                    "❌ Пожалуйста, выберите один из предложенных вариантов:",
+                    reply_markup=reply_markup
+                )
+                return f"QUESTION_{current_question_num}"
+            
             # Если у выбранного варианта есть ключ sub_options
             if selected_option and "sub_options" in selected_option:
-                sub_options = selected_option.get("sub_options")
-                # Добавляем отладочную информацию о структуре выбранного варианта и его подвариантах
-                logger.info(f"[{user_id}] Проверка sub_options для '{answer}': {sub_options}, тип: {type(sub_options)}")
+                # Проверка, что опция действительно предназначена для свободного ввода
+                # Специальная проверка для опций, которые нужно обрабатывать как обычные варианты
+                if answer == "Сторонник партии" or answer == "Гость":
+                    # Принудительно считаем этот вариант обычным, без свободного ввода
+                    logger.info(f"[{user_id}] Опция '{answer}' обрабатывается как обычный вариант без подвариантов")
+                    context.user_data['answers'].append(answer)
+                    return await self.send_question(update, context)
                 
-                # Проверяем тип sub_options и его содержимое
-                if isinstance(sub_options, list):
-                    if sub_options == []:  # Пустой список - свободный ответ
-                        # Это свободный ответ (явно указан пустой список)
-                        context.user_data['current_parent_answer'] = answer
-                        logger.info(f"[{user_id}] Установлен родительский ответ для свободного ввода: {answer}")
-                        return await self.send_question(update, context)
-                    elif sub_options:  # Непустой список - выбор подварианта
-                        # Есть вложенные варианты для выбора
-                        context.user_data['current_parent_answer'] = answer
-                        logger.info(f"[{user_id}] Установлен родительский ответ для выбора подвариантов: {answer}")
-                        return await self.send_question(update, context)
+                # Явно проверяем, что sub_options является пустым списком, а не просто отсутствует
+                # и что это не случай специальных вариантов
+                if isinstance(selected_option["sub_options"], list) and selected_option["sub_options"] == []:
+                    # Это действительно свободный ответ (явно указан пустой список подвариантов)
+                    context.user_data['current_parent_answer'] = answer
+                    logger.info(f"[{user_id}] Установлен родительский ответ для свободного ввода: {answer}")
+                elif isinstance(selected_option["sub_options"], list) and len(selected_option["sub_options"]) > 0:
+                    # Есть вложенные варианты для выбора
+                    context.user_data['current_parent_answer'] = answer
+                    logger.info(f"[{user_id}] Установлен родительский ответ для выбора подвариантов: {answer}")
+                else:
+                    # Это обычный вариант без подвариантов
+                    context.user_data['answers'].append(answer)
+                    logger.info(f"[{user_id}] Сохранен обычный ответ (без подвариантов): {answer}")
+                    return await self.send_question(update, context)
                 
-            # Это обычный вариант без подвариантов или с некорректными подвариантами
+                # Переходим к подвариантам только если действительно есть подварианты или свободный ответ
+                return await self.send_question(update, context)
+            
+            # Сохраняем обычный ответ
             context.user_data['answers'].append(answer)
             logger.info(f"[{user_id}] Сохранен обычный ответ: {answer}")
+        else:
+            # Сохраняем свободный ответ
+            context.user_data['answers'].append(answer)
+            logger.info(f"[{user_id}] Сохранен свободный ответ: {answer}")
         
         # Переходим к следующему вопросу
         return await self.send_question(update, context)

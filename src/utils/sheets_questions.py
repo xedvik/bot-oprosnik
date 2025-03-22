@@ -25,20 +25,54 @@ def add_question(self, question: str, options: list = None) -> bool:
             for option in options:
                 if isinstance(option, dict) and "text" in option:
                     option_text = option["text"]
-                    # Если есть вложенные варианты, добавляем их в формате "Вариант::подвариант1;подвариант2"
-                    if "sub_options" in option and option["sub_options"]:
-                        sub_options_str = ";".join(option["sub_options"])
-                        option_text = f"{option_text}::{sub_options_str}"
-                    row_data.append(option_text)
+                    option_for_sheet = option_text
+                    
+                    # Если есть вложенные варианты или пустой список sub_options, форматируем соответственно
+                    if "sub_options" in option:
+                        if isinstance(option["sub_options"], list):
+                            if len(option["sub_options"]) > 0:
+                                # Непустой список подвариантов
+                                sub_options_str = ";".join(option["sub_options"])
+                                option_for_sheet = f"{option_text}::{sub_options_str}"
+                                logger.info(f"Вариант '{option_text}' с подвариантами: {option['sub_options']}")
+                            elif len(option["sub_options"]) == 0:
+                                # Пустой список подвариантов - свободный ответ
+                                option_for_sheet = f"{option_text}::"
+                                logger.info(f"Вариант '{option_text}' со свободным ответом (пустой список sub_options)")
+                        else:
+                            logger.warning(f"Некорректный тип sub_options для '{option_text}': {type(option['sub_options'])}")
+                    
+                    logger.info(f"Добавляем в строку вариант: '{option_for_sheet}'")
+                    row_data.append(option_for_sheet)
                 else:
                     # Обратная совместимость со старым форматом (просто строка)
                     row_data.append(option)
         
         # Добавляем новый вопрос
+        logger.info(f"Отправляем в таблицу строку: {row_data}")
         questions_sheet.append_row(row_data, value_input_option='USER_ENTERED')
         
         # Обновляем структуру других листов
         self.update_sheets_structure()
+        
+        # После добавления, проверяем структуру
+        questions_with_options = self.get_questions_with_options()
+        if question in questions_with_options:
+            added_options = questions_with_options[question]
+            logger.info(f"Проверка добавленного вопроса '{question}', варианты: {added_options}")
+            
+            # Проверяем структуру вариантов
+            for option in added_options:
+                if isinstance(option, dict) and "text" in option:
+                    option_text = option["text"]
+                    
+                    # Проверяем наличие sub_options для свободных ответов
+                    if "sub_options" in option and isinstance(option["sub_options"], list) and option["sub_options"] == []:
+                        logger.info(f"✅ Вариант '{option_text}' сохранен с пустым списком sub_options (свободный ответ)")
+                    elif "sub_options" in option and option["sub_options"]:
+                        logger.info(f"✅ Вариант '{option_text}' сохранен с подвариантами: {option['sub_options']}")
+                    else:
+                        logger.info(f"✅ Вариант '{option_text}' сохранен как обычный вариант без подвариантов")
         
         logger.info("Вопрос успешно добавлен")
         return True
@@ -120,17 +154,52 @@ def edit_question_options(self, question_index: int, options: list) -> bool:
             # Проверяем, является ли вариант объектом с вложенными опциями или просто строкой
             if isinstance(option, dict) and "text" in option:
                 option_text = option["text"]
-                # Если есть вложенные варианты, добавляем их в формате "Вариант::подвариант1;подвариант2"
-                if "sub_options" in option and option["sub_options"]:
-                    sub_options_str = ";".join(option["sub_options"])
-                    option_text = f"{option_text}::{sub_options_str}"
-                questions_sheet.update_cell(row_index, i + 2, option_text)
+                option_for_sheet = option_text
+                
+                # Если есть вложенные варианты или пустой список sub_options, добавляем их в нужном формате
+                if "sub_options" in option:
+                    if isinstance(option["sub_options"], list):
+                        if len(option["sub_options"]) > 0:
+                            # Непустой список подвариантов
+                            sub_options_str = ";".join(option["sub_options"])
+                            option_for_sheet = f"{option_text}::{sub_options_str}"
+                            logger.info(f"Сохраняем вариант '{option_text}' с подвариантами: {option['sub_options']}")
+                        elif len(option["sub_options"]) == 0:
+                            # Явно пустой список sub_options - свободный ответ
+                            option_for_sheet = f"{option_text}::"
+                            logger.info(f"Сохраняем вариант '{option_text}' со свободным ответом (пустой список sub_options)")
+                    else:
+                        logger.warning(f"Некорректный тип sub_options для '{option_text}': {type(option['sub_options'])}")
+                
+                logger.info(f"Сохраняем в ячейку ({row_index}, {i+2}) значение: '{option_for_sheet}'")
+                questions_sheet.update_cell(row_index, i + 2, option_for_sheet)
             else:
                 # Обратная совместимость со старым форматом (просто строка)
                 questions_sheet.update_cell(row_index, i + 2, option)
         
         # Обновляем структуру других листов
         self.update_sheets_structure()
+        
+        # Проверяем сохранение после обновления
+        questions_with_options = self.get_questions_with_options()
+        found_question = None
+        for q in questions_with_options.keys():
+            if q == question_text:
+                found_question = q
+                break
+        
+        if found_question:
+            updated_options = questions_with_options[found_question]
+            logger.info(f"Проверка сохранения после обновления для '{found_question}':")
+            for opt in updated_options:
+                if isinstance(opt, dict) and "text" in opt:
+                    if "sub_options" in opt:
+                        if isinstance(opt["sub_options"], list) and len(opt["sub_options"]) == 0:
+                            logger.info(f"✅ Вариант '{opt['text']}' сохранил ПУСТОЙ список sub_options (свободный ответ)")
+                        else:
+                            logger.info(f"✅ Вариант '{opt['text']}' сохранил подварианты: {opt['sub_options']}")
+                    else:
+                        logger.info(f"✅ Вариант '{opt['text']}' сохранен как обычный вариант (без ключа sub_options)")
         
         logger.info(f"Варианты ответов для вопроса успешно обновлены")
         return True
@@ -302,8 +371,17 @@ def update_sheets_structure(self) -> bool:
     try:
         logger.info("Обновление структуры листов")
         
-        # Получаем текущие вопросы
+        # Получаем текущие вопросы и логируем их структуру перед обновлением
         questions = self.get_questions_with_options()
+        logger.info(f"Получены вопросы для обновления структуры: {len(questions)}")
+        
+        # Логируем варианты с пустыми списками sub_options
+        for question, options in questions.items():
+            for opt in options:
+                if isinstance(opt, dict) and "text" in opt and "sub_options" in opt:
+                    if isinstance(opt["sub_options"], list) and not opt["sub_options"]:
+                        logger.info(f"🔄 В вопросе '{question}' вариант '{opt['text']}' имеет пустой список sub_options (свободный ответ)")
+        
         question_texts = list(questions.keys())
         
         # Обновляем лист ответов
@@ -357,8 +435,13 @@ def update_sheets_structure(self) -> bool:
                         # Добавляем основной вариант
                         stats_data.append([question, option["text"], '0'])
                         
-                        # Обрабатываем вложенные варианты, если они есть
-                        if "sub_options" in option and option["sub_options"]:
+                        # Проверяем на свободный ответ (пустой список sub_options)
+                        if "sub_options" in option and isinstance(option["sub_options"], list) and option["sub_options"] == []:
+                            # Это свободный ответ - логируем для отладки
+                            logger.info(f"🆓 Обработка свободного ответа для варианта '{option['text']}' в update_sheets_structure")
+                            # Для свободных ответов не добавляем подварианты в статистику
+                        # Обрабатываем вложенные варианты, если они есть и не пустые
+                        elif "sub_options" in option and option["sub_options"]:
                             for sub_option in option["sub_options"]:
                                 # Добавляем вложенный вариант с отступом
                                 stats_data.append([question, f"  └ {sub_option}", '0'])
@@ -373,6 +456,17 @@ def update_sheets_structure(self) -> bool:
         else:
             # Если нет вопросов с вариантами, оставляем только заголовки
             stats_sheet.update('A1', [['Вопрос', 'Вариант ответа', 'Количество']])
+        
+        # Повторно получаем вопросы для проверки сохранения структуры
+        updated_questions = self.get_questions_with_options()
+        logger.info(f"После обновления структуры получено {len(updated_questions)} вопросов")
+        
+        # Проверяем сохранение вариантов с пустыми списками sub_options после обновления
+        for question, options in updated_questions.items():
+            for opt in options:
+                if isinstance(opt, dict) and "text" in opt and "sub_options" in opt:
+                    if isinstance(opt["sub_options"], list) and not opt["sub_options"]:
+                        logger.info(f"✅ После обновления структуры в вопросе '{question}' вариант '{opt['text']}' сохранил пустой список sub_options (свободный ответ)")
         
         logger.info("Структура листов успешно обновлена с сохранением существующих данных")
         return True

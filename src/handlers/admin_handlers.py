@@ -4,7 +4,7 @@
 
 import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
-from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters, CommandHandler
 
 from models.states import *
 from utils.sheets import GoogleSheets
@@ -264,8 +264,8 @@ class AdminHandler(BaseHandler):
         if 'options' not in context.user_data:
             context.user_data['options'] = []
             
-        # Добавляем новый вариант
-        context.user_data['options'].append({"text": choice, "sub_options": []})
+        # Добавляем новый вариант без sub_options
+        context.user_data['options'].append({"text": choice})
         
         # Показываем текущие варианты и предлагаем добавить еще
         options_list = "\n".join([f"{i+1}. {opt['text']}" for i, opt in enumerate(context.user_data['options'])])
@@ -288,6 +288,7 @@ class AdminHandler(BaseHandler):
     async def handle_nested_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка добавления вложенных вариантов ответов"""
         choice = update.message.text
+        logger.info(f"Обработка выбора для вложенных вариантов: {choice}")
         
         if choice == "❌ Нет, оставить как есть":
             await update.message.reply_text(
@@ -389,8 +390,17 @@ class AdminHandler(BaseHandler):
                 
                 # Находим родительский вариант и добавляем вложенные
                 for opt in current_options:
-                    if opt["text"] == parent_option:
-                        opt["sub_options"] = sub_options
+                    if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option:
+                        # Проверяем, что подварианты не пусты
+                        if sub_options:
+                            opt["sub_options"] = sub_options
+                            logger.info(f"Устанавливаем подварианты для '{parent_option}': {sub_options}")
+                        else:
+                            # Если нет подвариантов, удаляем свойство sub_options для обычных вариантов
+                            if "sub_options" in opt:
+                                # Удаляем свойство sub_options полностью, так как это обычный вариант без подвариантов
+                                del opt["sub_options"] 
+                                logger.info(f"Удаляем свойство sub_options у '{parent_option}' - обычный вариант")
                         break
                 
                 # Сохраняем обновленные варианты
@@ -398,8 +408,31 @@ class AdminHandler(BaseHandler):
                 
                 if success:
                     # Обновляем список вопросов
+                    old_questions_with_options = self.questions_with_options.copy()
                     self.questions_with_options = self.sheets.get_questions_with_options()
                     self.questions = list(self.questions_with_options.keys())
+                    
+                    # Проверка сохранения sub_options после обновления
+                    found = False
+                    updated_options = self.questions_with_options.get(question, [])
+                    for opt in updated_options:
+                        if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option:
+                            found = True
+                            # Проверяем наличие sub_options в обновленном варианте
+                            old_opt = next((o for o in old_questions_with_options[question] if o.get("text") == parent_option), None)
+                            if old_opt and "sub_options" in old_opt and old_opt["sub_options"]:
+                                if "sub_options" in opt and opt["sub_options"]:
+                                    logger.info(f"✅ Проверка после обновления: вариант '{parent_option}' сохранил подварианты: {opt['sub_options']}")
+                                else:
+                                    logger.warning(f"⚠️ Проверка после обновления: у варианта '{parent_option}' были утеряны подварианты!")
+                            elif old_opt and "sub_options" not in old_opt:
+                                if "sub_options" not in opt:
+                                    logger.info(f"✅ Проверка после обновления: вариант '{parent_option}' остался обычным вариантом без подвариантов")
+                                else:
+                                    logger.warning(f"⚠️ Проверка после обновления: у варианта '{parent_option}' неожиданно появились подварианты: {opt.get('sub_options')}")
+                    
+                    if not found:
+                        logger.warning(f"⚠️ Проверка после обновления: вариант '{parent_option}' не найден в вопросе '{question}'")
                     
                     # Обновляем списки вопросов в других обработчиках через application
                     await self._update_handlers_questions(update)
@@ -454,17 +487,46 @@ class AdminHandler(BaseHandler):
                 
                 # Находим родительский вариант и устанавливаем пустой список подвариантов
                 for opt in current_options:
-                    if opt["text"] == parent_option:
+                    if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option:
+                        # Явно указываем пустой список для свободного ответа
                         opt["sub_options"] = []
+                        logger.info(f"Установлен пустой список sub_options для '{parent_option}' - свободный ответ. Структура: {opt}")
                         break
                 
-                # Сохраняем обновленные варианты
+                # Сохраняем обновленные варианты и логируем подробно каждый шаг
+                logger.info(f"Отправка на сохранение для вопроса {question_num}, вариант '{parent_option}' с пустым списком sub_options: {current_options}")
                 success = self.sheets.edit_question_options(question_num, current_options)
                 
                 if success:
+                    logger.info(f"Успешно сохранен вариант '{parent_option}' с пустым списком sub_options, обновляем списки вопросов")
                     # Обновляем список вопросов
                     self.questions_with_options = self.sheets.get_questions_with_options()
                     self.questions = list(self.questions_with_options.keys())
+                    
+                    # Проверка сохранения пустого списка sub_options после обновления
+                    found = False
+                    updated_options = self.questions_with_options.get(question, [])
+                    for opt in updated_options:
+                        if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option:
+                            found = True
+                            if "sub_options" in opt and isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
+                                logger.info(f"✅ Проверка после обновления: вариант '{parent_option}' сохранил пустой список sub_options=[] (свободный ответ)")
+                            else:
+                                logger.warning(f"⚠️ Проверка после обновления: вариант '{parent_option}' НЕ имеет пустого списка sub_options! Текущая структура: {opt}")
+                    
+                    if not found:
+                        logger.warning(f"⚠️ Проверка после обновления: вариант '{parent_option}' не найден в вопросе '{question}'")
+                    
+                    # Повторно проверяем структуру опций после обновления, чтобы видеть проблемы в логе
+                    logger.info(f"Структура вопроса '{question}' после обновления:")
+                    for i, opt in enumerate(updated_options):
+                        if isinstance(opt, dict):
+                            if "sub_options" in opt:
+                                logger.info(f"  Опция {i+1}: '{opt['text']}', sub_options: {opt['sub_options']}")
+                            else:
+                                logger.info(f"  Опция {i+1}: '{opt['text']}', без sub_options")
+                        else:
+                            logger.info(f"  Опция {i+1}: '{opt}' (не dict)")
                     
                     # Обновляем списки вопросов в других обработчиках через application
                     await self._update_handlers_questions(update)
@@ -498,25 +560,29 @@ class AdminHandler(BaseHandler):
             if 'sub_options' not in context.user_data:
                 context.user_data['sub_options'] = []
             
-            context.user_data['sub_options'].append(choice)
+            # Проверяем, что выбор не является спец. командой
+            if choice not in ["✨ Сделать свободным", "❌ Отмена"]:
+                context.user_data['sub_options'].append(choice)
+                logger.info(f"Добавлен подвариант '{choice}' для '{context.user_data.get('parent_option', '')}'")
             
-            # Запрашиваем следующий вложенный вариант
-            keyboard = [
-                [KeyboardButton("✅ Готово")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            parent_option = context.user_data['parent_option']
-            
-            await update.message.reply_text(
-                f"✅ Вложенный вариант добавлен: {choice}\n\n"
-                f"Текущие вложенные варианты для '{parent_option}':\n" +
-                "\n".join(f"• {opt}" for opt in context.user_data['sub_options']) +
-                "\n\nВведите следующий вложенный вариант или нажмите 'Готово':",
-                reply_markup=reply_markup
-            )
-            
-            return ADDING_NESTED_OPTIONS
+                # Запрашиваем следующий вложенный вариант
+                keyboard = [
+                    [KeyboardButton("✅ Готово")],
+                    [KeyboardButton("❌ Отмена")]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                parent_option = context.user_data['parent_option']
+                
+                await update.message.reply_text(
+                    f"✅ Вложенный вариант добавлен: {choice}\n\n"
+                    f"Текущие вложенные варианты для '{parent_option}':\n" +
+                    "\n".join(f"• {opt}" for opt in context.user_data['sub_options']) +
+                    "\n\nВведите следующий вложенный вариант или нажмите 'Готово':",
+                    reply_markup=reply_markup
+                )
+                
+                return ADDING_NESTED_OPTIONS
         
         # Обрабатываем выбор добавления к другому варианту
         if choice == "✅ Да, к другому варианту":
@@ -846,7 +912,27 @@ class AdminHandler(BaseHandler):
             self.questions_with_options = self.sheets.get_questions_with_options()
             self.questions = list(self.questions_with_options.keys())
             logger.info(f"Обновлены локальные списки вопросов в AdminHandler. Было: {old_questions_count}, стало: {len(self.questions)}")
-
+            
+            # Дополнительный проход для проверки подвариантов
+            for question, options in self.questions_with_options.items():
+                logger.info(f"Вопрос: '{question}' имеет {len(options)} вариантов ответа")
+                for opt in options:
+                    if isinstance(opt, dict) and "text" in opt:
+                        # Проверяем наличие sub_options
+                        has_sub_options = "sub_options" in opt
+                        
+                        if has_sub_options:
+                            sub_opts = opt.get("sub_options", [])
+                            
+                            if isinstance(sub_opts, list) and sub_opts == []:
+                                logger.info(f"🆓 Вариант '{opt['text']}' имеет пустой список sub_options=[] (СВОБОДНЫЙ ОТВЕТ)")
+                            elif isinstance(sub_opts, list) and sub_opts:
+                                logger.info(f"📋 Вариант '{opt['text']}' имеет подварианты: {sub_opts}")
+                            else:
+                                logger.info(f"⚠️ Вариант '{opt['text']}' имеет некорректное значение sub_options: {sub_opts}, тип: {type(sub_opts)}")
+                        else:
+                            logger.info(f"📌 Вариант '{opt['text']}' - обычный вариант без подвариантов (ключ sub_options отсутствует)")
+            
             # Обновляем списки вопросов в других обработчиках
             for handler in self.application.handlers[0]:
                 # Обновление для SurveyHandler
@@ -856,8 +942,9 @@ class AdminHandler(BaseHandler):
                         if hasattr(entry_point.callback, '__self__'):
                             survey_handler = entry_point.callback.__self__
                             old_count = len(survey_handler.questions)
-                            survey_handler.questions_with_options = self.questions_with_options
-                            survey_handler.questions = self.questions
+                            # Важно: передаем копию словаря questions_with_options, чтобы избежать изменений общих данных
+                            survey_handler.questions_with_options = self.questions_with_options.copy()
+                            survey_handler.questions = self.questions.copy()
                             
                             # Полностью перестраиваем состояния для вопросов
                             new_states = {}
@@ -889,8 +976,8 @@ class AdminHandler(BaseHandler):
                         if hasattr(entry_point.callback, '__self__'):
                             edit_handler = entry_point.callback.__self__
                             old_count = len(edit_handler.questions)
-                            edit_handler.questions_with_options = self.questions_with_options
-                            edit_handler.questions = self.questions
+                            edit_handler.questions_with_options = self.questions_with_options.copy()
+                            edit_handler.questions = self.questions.copy()
                             
                             logger.info(f"Обновлены списки вопросов в EditHandler. Было: {old_count}, стало: {len(self.questions)}")
                             break
@@ -902,8 +989,8 @@ class AdminHandler(BaseHandler):
                         if hasattr(entry_point.callback, '__self__'):
                             delete_handler = entry_point.callback.__self__
                             old_count = len(delete_handler.questions)
-                            delete_handler.questions_with_options = self.questions_with_options
-                            delete_handler.questions = self.questions
+                            delete_handler.questions_with_options = self.questions_with_options.copy()
+                            delete_handler.questions = self.questions.copy()
                             
                             logger.info(f"Обновлены списки вопросов в DeleteQuestionHandler. Было: {old_count}, стало: {len(self.questions)}")
                             break
@@ -914,8 +1001,8 @@ class AdminHandler(BaseHandler):
                         list_questions_handler = handler.callback.__self__
                         if hasattr(list_questions_handler, 'questions'):
                             old_count = len(list_questions_handler.questions)
-                            list_questions_handler.questions_with_options = self.questions_with_options
-                            list_questions_handler.questions = self.questions
+                            list_questions_handler.questions_with_options = self.questions_with_options.copy()
+                            list_questions_handler.questions = self.questions.copy()
                             logger.info(f"Обновлены списки вопросов в ListQuestionsHandler. Было: {old_count}, стало: {len(self.questions)}")
 
             # Проверяем все группы обработчиков для обновления
@@ -935,8 +1022,8 @@ class AdminHandler(BaseHandler):
                                 
                             if hasattr(handler_instance, 'questions') and hasattr(handler_instance, 'questions_with_options'):
                                 old_count = len(handler_instance.questions)
-                                handler_instance.questions_with_options = self.questions_with_options
-                                handler_instance.questions = self.questions
+                                handler_instance.questions_with_options = self.questions_with_options.copy()
+                                handler_instance.questions = self.questions.copy()
                                 logger.info(f"Обновлены списки вопросов в {handler_instance.__class__.__name__} (группа {group_idx}). Было: {old_count}, стало: {len(self.questions)}")
 
             logger.info(f"Списки вопросов успешно обновлены во всех обработчиках. Итоговое количество вопросов: {len(self.questions)}")
@@ -1076,3 +1163,71 @@ class AdminHandler(BaseHandler):
             users_text,
             reply_markup=reply_markup
         ) 
+
+    async def handle_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка списка пользователей"""
+        logger.info(f"Получение списка пользователей")
+        
+        # Получаем список пользователей из таблицы
+        users = self.sheets.get_users_list()
+        
+        if not users:
+            await update.message.reply_text(
+                "❌ Нет данных о пользователях",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Формируем текст с информацией о пользователях
+        users_text = f"👥 *Список пользователей:* {len(users)}\n\n"
+        
+        for i, user in enumerate(users, start=1):
+            user_id = user.get('user_id', 'Неизвестно')
+            event_info = user.get('event_info', 'Не указано')
+            name = user.get('name', 'Неизвестно')
+            category = user.get('category', 'Не указана')
+            survey_date = user.get('survey_date', 'Неизвестно')
+            
+            users_text += f"{i}. ID: `{user_id}`\n   Имя: {name}\n   Инфо: {event_info}\n   Категория: {category}\n   Дата опроса: {survey_date}\n\n"
+        
+        # Проверяем длину текста
+        if len(users_text) > 4096:
+            # Разбиваем на части
+            chunks = []
+            current_chunk = ""
+            
+            for line in users_text.split('\n'):
+                if len(current_chunk) + len(line) + 1 > 4096:
+                    chunks.append(current_chunk)
+                    current_chunk = line
+                else:
+                    current_chunk += line + '\n'
+            
+            # Добавляем последний чанк
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            # Отправляем части
+            for i, chunk in enumerate(chunks):
+                # Для последней части отправляем с reply_markup
+                if i == len(chunks) - 1:
+                    reply_markup = ReplyKeyboardRemove()
+                else:
+                    reply_markup = None
+                
+                await update.message.reply_text(
+                    chunk,
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+        else:
+            # Отправляем весь текст сразу
+            reply_markup = ReplyKeyboardRemove()
+            
+            await update.message.reply_text(
+                users_text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        
+        return ConversationHandler.END 

@@ -38,7 +38,7 @@ class BaseHandler:
         
         # Создаем клавиатуру с двумя кнопками
         keyboard = [
-            [KeyboardButton("▶️ Пройти анкету")],
+            [KeyboardButton("▶️ Зарегистрироваться")],
             [KeyboardButton("ℹ️ Узнать о мероприятии")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -136,7 +136,7 @@ class BaseHandler:
         
         # Создаем клавиатуру для возврата
         keyboard = [
-            [KeyboardButton("▶️ Пройти анкету")],
+            [KeyboardButton("▶️ Зарегистрироваться")],
             [KeyboardButton("🔙 Вернуться")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)

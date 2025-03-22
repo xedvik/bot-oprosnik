@@ -101,12 +101,29 @@ class GoogleSheets:
                     # Проверяем, содержит ли опция вложенные варианты (формат: "Вариант::подвариант1;подвариант2")
                     if "::" in opt:
                         main_opt, sub_opts_str = opt.split("::", 1)
-                        sub_options = [sub_opt.strip() for sub_opt in sub_opts_str.split(";") if sub_opt.strip()]
-                        options.append({"text": main_opt.strip(), "sub_options": sub_options})
+                        main_opt = main_opt.strip()  # Важно очистить пробелы до проверки
+                        
+                        # Проверяем, является ли это свободным ответом (пустой список)
+                        if sub_opts_str.strip() == "":
+                            # Пустая строка после :: означает свободный ввод
+                            logger.info(f"Обнаружен вариант с пустым списком sub_options (свободный ответ): {main_opt}")
+                            options.append({"text": main_opt, "sub_options": []})
+                        else:
+                            # Есть подварианты
+                            sub_options = [sub_opt.strip() for sub_opt in sub_opts_str.split(";") if sub_opt.strip()]
+                            options.append({"text": main_opt, "sub_options": sub_options})
                     else:
-                        options.append({"text": opt.strip(), "sub_options": []})
+                        # Обычный вариант без подвариантов
+                        options.append({"text": opt.strip()})
                 
                 questions_with_options[question] = options
+            
+            # Логируем структуру вариантов для проверки
+            for question, opts in questions_with_options.items():
+                for opt in opts:
+                    if "sub_options" in opt:
+                        if isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
+                            logger.info(f"Загружен вариант с пустым списком sub_options (свободный ответ): {opt['text']}")
             
             logger.info(f"Получено {len(questions_with_options)} вопросов")
             return questions_with_options
