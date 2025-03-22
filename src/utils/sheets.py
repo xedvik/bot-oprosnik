@@ -7,6 +7,7 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import os
+import time
 
 from config import (
     GOOGLE_CREDENTIALS_FILE, SPREADSHEET_ID,
@@ -23,34 +24,32 @@ class GoogleSheets:
     
     def __init__(self):
         """Инициализация подключения к Google Sheets"""
+        logger.info("Инициализация подключения к Google Sheets")
+        
+        # Область видимости, необходимая для работы с Google Sheets
+        scope = [
+            'https://spreadsheets.google.com/feeds',
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        
+        # Создаем клиент для работы с Google Sheets
         try:
-            logger.info("Инициализация подключения к Google Sheets")
-            
-            # Определяем необходимые разрешения
-            scopes = [
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive'
-            ]
-            
-            # Создаем учетные данные из файла
-            credentials = Credentials.from_service_account_file(
-                GOOGLE_CREDENTIALS_FILE, scopes=scopes
-            )
-            
-            # Авторизуемся в Google Sheets с использованием нового API
-            self.client = gspread.Client(auth=credentials)
-            
-            # Открываем таблицу
-            self.sheet = self.client.open_by_key(SPREADSHEET_ID)
-            
+            creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
+            self.sheet = gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
             logger.info("Подключение к Google Sheets успешно установлено")
             
-            # Инициализируем все необходимые листы при старте
+            # Инициализация кэша для вопросов и времени последнего обновления
+            self._questions_cache = None
+            self._questions_cache_time = 0
+            self._questions_cache_ttl = 30  # время жизни кэша в секундах
+            
+            # Инициализируем листы таблицы, если они не существуют
             self.initialize_sheets()
             
         except Exception as e:
             logger.error(f"Ошибка при подключении к Google Sheets: {e}")
-            raise
+            raise e
     
     def initialize_sheets(self):
         """Инициализация всех необходимых листов"""
@@ -73,7 +72,14 @@ class GoogleSheets:
             raise
     
     def get_questions_with_options(self) -> dict:
-        """Получение вопросов с вариантами ответов из таблицы"""
+        """Получение вопросов с вариантами ответов из таблицы с кэшированием"""
+        # Проверка наличия актуального кэша
+        current_time = time.time()
+        if (self._questions_cache is not None and 
+            current_time - self._questions_cache_time < self._questions_cache_ttl):
+            logger.info(f"Используем кэшированные вопросы ({len(self._questions_cache)} вопросов)")
+            return self._questions_cache.copy()
+            
         try:
             logger.info("Получение вопросов с вариантами ответов")
             questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
@@ -103,39 +109,85 @@ class GoogleSheets:
                         main_opt, sub_opts_str = opt.split("::", 1)
                         main_opt = main_opt.strip()  # Важно очистить пробелы до проверки
                         
-                        # Проверяем, является ли это свободным ответом (пустой список)
+                        # Проверяем, является ли это свободным ответом или подсказкой
                         if sub_opts_str.strip() == "":
                             # Пустая строка после :: означает свободный ввод
                             logger.info(f"Обнаружен вариант с пустым списком sub_options (свободный ответ): {main_opt}")
                             options.append({"text": main_opt, "sub_options": []})
+                        # Проверяем формат с префиксом prompt=
+                        elif sub_opts_str.strip().startswith("prompt="):
+                            # Это специальный формат для сохранения подсказки для свободного ввода
+                            free_text_prompt = sub_opts_str.strip()[7:]  # Убираем префикс "prompt="
+                            logger.info(f"Обнаружена подсказка для свободного ввода в формате prompt=: {main_opt} -> prompt={free_text_prompt}")
+                            options.append({
+                                "text": main_opt,
+                                "sub_options": [], # Пустой список означает свободный ответ
+                                "free_text_prompt": free_text_prompt
+                            })
+                        # Проверяем другие форматы подсказок
+                        elif ";" not in sub_opts_str and ("вопрос" in sub_opts_str.lower() or "введите" in sub_opts_str.lower()):
+                            # Это подсказка для свободного ввода, а не список подвариантов
+                            logger.info(f"Обнаружена подсказка для свободного ввода: {main_opt} -> {sub_opts_str}")
+                            options.append({
+                                "text": main_opt,
+                                "sub_options": [], # Пустой список означает свободный ответ
+                                "free_text_prompt": sub_opts_str.strip()
+                            })
                         else:
-                            # Есть подварианты
-                            sub_options = [sub_opt.strip() for sub_opt in sub_opts_str.split(";") if sub_opt.strip()]
-                            options.append({"text": main_opt, "sub_options": sub_options})
+                            # Парсим подварианты
+                            sub_options_list = [sub_opt.strip() for sub_opt in sub_opts_str.split(";") if sub_opt.strip()]
+                            
+                            if len(sub_options_list) == 1 and ("вопрос для" in sub_options_list[0].lower() or "введите" in sub_options_list[0].lower()):
+                                # Это подсказка для свободного ввода, преобразуем в соответствующий формат
+                                logger.info(f"Обнаружен вариант с подсказкой для свободного ввода: {main_opt} -> {sub_options_list[0]}")
+                                options.append({
+                                    "text": main_opt, 
+                                    "sub_options": [], 
+                                    "free_text_prompt": sub_options_list[0]
+                                })
+                            else:
+                                # Обычные подварианты
+                                options.append({"text": main_opt, "sub_options": sub_options_list})
                     else:
                         # Обычный вариант без подвариантов
                         options.append({"text": opt.strip()})
                 
                 questions_with_options[question] = options
             
-            # Логируем структуру вариантов для проверки
+            # Логируем структуру вариантов для проверки (уменьшаем количество логов)
             for question, opts in questions_with_options.items():
                 for opt in opts:
                     if "sub_options" in opt:
                         if isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
-                            logger.info(f"Загружен вариант с пустым списком sub_options (свободный ответ): {opt['text']}")
+                            if "free_text_prompt" in opt:
+                                logger.info(f"Загружен вариант с пустым списком sub_options и подсказкой для свободного ввода: {opt['text']} -> {opt['free_text_prompt']}")
+                            else:
+                                logger.info(f"Загружен вариант с пустым списком sub_options (свободный ответ): {opt['text']}")
             
             logger.info(f"Получено {len(questions_with_options)} вопросов")
-            return questions_with_options
+            
+            # Обновляем кэш и время последнего обновления
+            self._questions_cache = questions_with_options
+            self._questions_cache_time = current_time
+            
+            return questions_with_options.copy()
             
         except Exception as e:
             logger.error(f"Ошибка при получении вопросов: {e}")
-            return {}
+            # Возвращаем кэш, если он есть, иначе пустой словарь
+            return self._questions_cache.copy() if self._questions_cache is not None else {}
+                    
+    # Метод для принудительного обновления кэша
+    def invalidate_questions_cache(self):
+        """Сбрасывает кэш вопросов, чтобы при следующем вызове данные были загружены заново"""
+        self._questions_cache = None
+        self._questions_cache_time = 0
+        logger.info("Кэш вопросов сброшен")
     
     def save_answers(self, answers: list, user_id: int) -> bool:
         """Сохранение ответов пользователя в таблицу"""
         try:
-            logger.info(f"[{user_id}] Начало сохранения ответов")
+            logger.info(f"[{user_id}] Начало сохранения ответов: {answers}")
             start_time = datetime.now()
             
             # Получаем список вопросов
@@ -144,6 +196,8 @@ class GoogleSheets:
             # Проверяем, что количество ответов соответствует количеству вопросов
             if len(answers) != len(questions):
                 logger.error(f"[{user_id}] Количество ответов ({len(answers)}) не соответствует количеству вопросов ({len(questions)})")
+                logger.error(f"[{user_id}] Ответы: {answers}")
+                logger.error(f"[{user_id}] Вопросы: {questions}")
                 return False
             
             # Получаем текущую дату и время
@@ -272,54 +326,109 @@ class GoogleSheets:
             logger.error(f"Ошибка при обновлении листа статистики: {e}")
             return False
     
-    def update_statistics(self, question_index: int, answer: str) -> bool:
-        """Обновление статистики для вопроса"""
+    def update_statistics(self):
+        """Обновление статистики в отдельном листе"""
         try:
-            logger.info(f"Обновление статистики для вопроса {question_index}, ответ: {answer}")
+            # Проверяем наличие листа статистики
+            stats_sheet = self.spreadsheet.worksheet(STATS_SHEET)
             
-            # Получаем текущую статистику из ответов
-            stats_data = self.get_statistics()
-            
-            # Обновляем лист статистики полностью
-            stats_sheet = self.sheet.worksheet(STATS_SHEET)
-            
-            # Очищаем текущие данные
-            stats_sheet.clear()
-            
-            # Добавляем заголовок
-            stats_sheet.append_row(["Статистика опроса"])
-            
-            # Получаем вопросы и варианты ответов
-            questions_with_options = self.get_questions_with_options()
-            
-            # Для каждого вопроса добавляем строки с вариантами и процентами
-            for question, options in questions_with_options.items():
-                # Добавляем строку с вопросом
-                stats_sheet.append_row([question])
+            if not stats_sheet:
+                logger.warning("Лист статистики не найден, создание невозможно")
+                return False
                 
-                # Если у вопроса есть варианты ответов
-                if options:
-                    # Получаем статистику для этого вопроса
-                    question_stats = stats_data.get(question, {})
-                    total_answers = sum(question_stats.values()) if question_stats else 0
+            # Получаем все ответы
+            logger.info("Начало обновления статистики...")
+            
+            # Получаем все ответы из листа ответов
+            answers_sheet = self.spreadsheet.worksheet(ANSWERS_SHEET)
+            all_responses = answers_sheet.get_all_values()
+            
+            if len(all_responses) <= 1:  # Только заголовки или пусто
+                logger.warning("Нет данных для статистики")
+                return False
+                
+            # Пропускаем заголовок
+            responses = all_responses[1:]
+            
+            # Получаем вопросы
+            questions_sheet = self.spreadsheet.worksheet(QUESTIONS_SHEET)
+            questions_data = questions_sheet.get_all_values()
+            
+            if len(questions_data) <= 1:  # Только заголовки или пусто
+                logger.warning("Нет вопросов для статистики")
+                return False
+                
+            # Пропускаем заголовок
+            questions = [row[0] for row in questions_data[1:] if row and len(row) > 0]
+            
+            # Словарь для подсчета статистики
+            stats = {}
+            
+            # Индексы вопросов в ответах (начиная с 1, так как первый столбец - ID пользователя)
+            for i, question in enumerate(questions):
+                question_idx = i + 1
+                
+                # Список всех ответов на этот вопрос
+                answers = [row[question_idx] for row in responses if len(row) > question_idx]
+                
+                # Группируем ответы для подсчета статистики
+                answer_counts = {}
+                for answer in answers:
+                    # Обрабатываем составные ответы
+                    if " - " in answer:
+                        parts = answer.split(" - ", 1)
+                        main_part = parts[0]
+                        
+                        # Если это основной вариант с подвариантом
+                        if len(parts) > 1:
+                            sub_part = parts[1]
+                            
+                            # Учитываем основной вариант
+                            if main_part not in answer_counts:
+                                answer_counts[main_part] = 0
+                            answer_counts[main_part] += 1
+                            
+                            # Учитываем подвариант
+                            compound_key = f"{main_part} - {sub_part.split(' (на вопрос:', 1)[0]}"
+                            if compound_key not in answer_counts:
+                                answer_counts[compound_key] = 0
+                            answer_counts[compound_key] += 1
+                    else:
+                        # Простой ответ
+                        if answer not in answer_counts:
+                            answer_counts[answer] = 0
+                        answer_counts[answer] += 1
+                
+                stats[question] = answer_counts
+            
+            # Очищаем лист статистики и обновляем заголовки
+            stats_sheet.clear()
+            stats_sheet.update_cell(1, 1, "Вопрос")
+            stats_sheet.update_cell(1, 2, "Вариант ответа")
+            stats_sheet.update_cell(1, 3, "Количество")
+            stats_sheet.update_cell(1, 4, "Процент")
+            
+            # Заполняем статистику
+            row = 2
+            for question, answer_counts in stats.items():
+                for answer, count in answer_counts.items():
+                    # Вычисляем процент
+                    total_answers = len([r for r in responses if len(r) > questions.index(question) + 1])
+                    percentage = 0 if total_answers == 0 else (count / total_answers) * 100
                     
-                    # Для каждого варианта ответа показываем статистику
-                    for option in options:
-                        count = question_stats.get(option, 0)
-                        percentage = (count / total_answers * 100) if total_answers > 0 else 0
-                        stats_sheet.append_row([option, f"{percentage:.1f}%", str(count)])
+                    # Добавляем строку статистики
+                    stats_sheet.update_cell(row, 1, question)
+                    stats_sheet.update_cell(row, 2, answer)
+                    stats_sheet.update_cell(row, 3, count)
+                    stats_sheet.update_cell(row, 4, f"{percentage:.1f}%")
+                    
+                    row += 1
             
-            # Добавляем общее количество опросов
-            answers_sheet = self.sheet.worksheet(ANSWERS_SHEET)
-            answers_data = answers_sheet.get_all_values()
-            total_surveys = max(0, len(answers_data) - 1)  # -1 для заголовка
-            stats_sheet.append_row(["Всего пройдено опросов:", str(total_surveys)])
-            
-            logger.info("Лист статистики успешно обновлен с процентами")
+            logger.info(f"Статистика успешно обновлена, обработано {len(responses)} ответов на {len(questions)} вопросов")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при обновлении листа статистики: {e}")
+            logger.error(f"Ошибка при обновлении статистики: {str(e)}")
             return False
 
     def update_stats_sheet_with_percentages(self):
@@ -571,14 +680,25 @@ class GoogleSheets:
             logger.exception(e)
             return []
 
-    def get_sheet_values(self, sheet_name: str) -> list:
-        """Получение всех значений с листа"""
+    def get_sheet_values(self, sheet_name):
+        """Получение всех значений с указанного листа"""
         try:
-            worksheet = self.sheet.worksheet(SHEET_NAMES[sheet_name])
-            return worksheet.get_all_values()
+            logger.info(f"Получение данных с листа {sheet_name}")
+            
+            # Проверяем, может быть нам нужно использовать имя листа из SHEET_NAMES
+            if sheet_name in SHEET_NAMES:
+                actual_sheet_name = SHEET_NAMES[sheet_name]
+                logger.info(f"Используем имя листа из SHEET_NAMES: {sheet_name} -> {actual_sheet_name}")
+            else:
+                actual_sheet_name = sheet_name
+                
+            worksheet = self.sheet.worksheet(actual_sheet_name)
+            values = worksheet.get_all_values()
+            logger.info(f"Получено {len(values)} строк с листа {sheet_name}")
+            return values
         except Exception as e:
             logger.error(f"Ошибка при получении данных с листа {sheet_name}: {e}")
-            return []
+            return None
 
     def get_next_user_id(self) -> int:
         """Получение следующего доступного ID пользователя"""

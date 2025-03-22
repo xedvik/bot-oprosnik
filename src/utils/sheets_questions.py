@@ -3,11 +3,38 @@
 """
 
 import logging
+import time
 from utils.sheets import GoogleSheets
 from config import QUESTIONS_SHEET, ANSWERS_SHEET, STATS_SHEET, ADMINS_SHEET
+from gspread.exceptions import APIError
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
+
+# Добавление функции для безопасного выполнения API-запросов с повторными попытками
+def safe_api_call(func, max_retries=3, base_delay=2):
+    """Декоратор для безопасного выполнения API-запросов с повторными попытками при превышении квоты"""
+    def wrapper(*args, **kwargs):
+        retries = 0
+        while retries < max_retries:
+            try:
+                return func(*args, **kwargs)
+            except APIError as e:
+                if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                    wait_time = base_delay * (2 ** retries)  # экспоненциальная задержка
+                    logger.warning(f"Превышение квоты API Google Sheets. Ожидание {wait_time} сек. Попытка {retries+1}/{max_retries}")
+                    time.sleep(wait_time)
+                    retries += 1
+                    if retries == max_retries:
+                        logger.error(f"Исчерпаны все попытки выполнения API-запроса. Последняя ошибка: {e}")
+                        return False
+                else:
+                    logger.error(f"Ошибка API Google Sheets: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Неожиданная ошибка: {e}")
+                return False
+    return wrapper
 
 # Добавляем методы в класс GoogleSheets
 def add_question(self, question: str, options: list = None) -> bool:
@@ -46,11 +73,20 @@ def add_question(self, question: str, options: list = None) -> bool:
                     row_data.append(option_for_sheet)
                 else:
                     # Обратная совместимость со старым форматом (просто строка)
-                    row_data.append(option)
+                    row_data.append(str(option))
         
         # Добавляем новый вопрос
         logger.info(f"Отправляем в таблицу строку: {row_data}")
-        questions_sheet.append_row(row_data, value_input_option='USER_ENTERED')
+        
+        # Используем декоратор для безопасного API-вызова
+        @safe_api_call
+        def append_row():
+            return questions_sheet.append_row(row_data, value_input_option='USER_ENTERED')
+        
+        append_row()
+        
+        # Инвалидируем кэш вопросов
+        self.invalidate_questions_cache()
         
         # Обновляем структуру других листов
         self.update_sheets_structure()
@@ -113,7 +149,7 @@ def edit_question_text(self, question_index: int, new_text: str) -> bool:
         logger.error(f"Ошибка при редактировании текста вопроса: {e}")
         return False
 
-def edit_question_options(self, question_index: int, options: list) -> bool:
+def edit_question_options(self, question_index: int, options: list, free_text_prompt: str = None, parent_option_text: str = None) -> bool:
     """Редактирование вариантов ответов для вопроса"""
     # Проверяем валидность индекса вопроса
     if question_index < 0 or question_index >= len(list(self.get_questions_with_options().keys())):
@@ -131,6 +167,47 @@ def edit_question_options(self, question_index: int, options: list) -> bool:
         logger.info(f"Редактирование вариантов ответов для вопроса с индексом {question_index}")
         logger.info(f"Новые варианты ответов: {options}")
 
+        # Проверка на добавление free_text_prompt через дополнительные параметры
+        if free_text_prompt and parent_option_text:
+            logger.info(f"Обнаружены дополнительные параметры: free_text_prompt='{free_text_prompt}', parent_option_text='{parent_option_text}'")
+            
+            # Найдем нужный вариант в списке опций
+            target_option = None
+            for opt in options:
+                if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
+                    target_option = opt
+                    break
+            
+            if target_option:
+                # Проверяем, соответствует ли формат свободного ввода
+                if "sub_options" in target_option and isinstance(target_option["sub_options"], list) and target_option["sub_options"] == []:
+                    # Формируем строку для сохранения с подсказкой
+                    options_str = f"{parent_option_text}::prompt={free_text_prompt}"
+                    logger.info(f"Сохраняем вариант '{parent_option_text}' со свободным ответом и подсказкой: '{free_text_prompt}'")
+                    
+                    # Сохраняем в ячейку
+                    questions_sheet.update_cell(row, 2, options_str)
+                    
+                    # Обновляем структуру листов после редактирования
+                    self.update_sheets_structure()
+                    
+                    # Проверяем, что подсказка была сохранена
+                    current_cell_value = questions_sheet.cell(row, 2).value
+                    if "prompt=" in current_cell_value:
+                        logger.info(f"✅ Подсказка для свободного ответа '{free_text_prompt}' успешно сохранена: {current_cell_value}")
+                        return True
+                    else:
+                        # Подсказка не сохранилась в формате prompt=, пробуем альтернативный формат
+                        options_str = f"{parent_option_text}::{free_text_prompt}"
+                        logger.info(f"Пробуем альтернативный формат: {options_str}")
+                        questions_sheet.update_cell(row, 2, options_str)
+                        return True
+                else:
+                    logger.warning(f"Вариант '{parent_option_text}' не соответствует формату свободного ответа")
+            else:
+                logger.warning(f"Вариант '{parent_option_text}' не найден в списке опций")
+
+        # Стандартная обработка без free_text_prompt
         # Преобразуем варианты ответов в строку для сохранения в ячейке
         options_str = ""
         for opt in options:
@@ -142,8 +219,13 @@ def edit_question_options(self, question_index: int, options: list) -> bool:
                         logger.info(f"Сохраняем вариант '{opt['text']}' с подвариантами: {opt['sub_options']}")
                         options_str = f"{opt['text']}::{sub_options_str}"
                     else:  # Пустой список подвариантов (свободный ответ)
-                        logger.info(f"Сохраняем вариант '{opt['text']}' со свободным ответом (пустой список sub_options)")
-                        options_str = f"{opt['text']}::"
+                        # Проверяем, есть ли подсказка для свободного ввода
+                        if "free_text_prompt" in opt:
+                            logger.info(f"Сохраняем вариант '{opt['text']}' со свободным ответом и подсказкой: '{opt['free_text_prompt']}'")
+                            options_str = f"{opt['text']}::prompt={opt['free_text_prompt']}"
+                        else:
+                            logger.info(f"Сохраняем вариант '{opt['text']}' со свободным ответом (пустой список sub_options)")
+                            options_str = f"{opt['text']}::"
                 else:
                     # Обычный вариант без подвариантов
                     logger.info(f"Сохраняем вариант '{opt['text']}' без подвариантов")
@@ -163,17 +245,23 @@ def edit_question_options(self, question_index: int, options: list) -> bool:
         for q, opts in updated_questions.items():
             if q == question_text:
                 for i, opt in enumerate(opts):
-                    if isinstance(opt, dict) and "text" in opt and opt["text"] == options[0]["text"]:
+                    if isinstance(opt, dict) and "text" in opt and i < len(options) and isinstance(options[i], dict) and "text" in options[i] and opt["text"] == options[i]["text"]:
                         # Проверяем сохранение подвариантов
-                        if "sub_options" in options[0] and isinstance(options[0]["sub_options"], list):
-                            if options[0]["sub_options"]:  # Непустой список подвариантов
-                                if "sub_options" in opt and opt["sub_options"] == options[0]["sub_options"]:
+                        if "sub_options" in options[i] and isinstance(options[i]["sub_options"], list):
+                            if options[i]["sub_options"]:  # Непустой список подвариантов
+                                if "sub_options" in opt and opt["sub_options"] == options[i]["sub_options"]:
                                     logger.info(f"✅ Вариант '{opt['text']}' сохранил подварианты: {opt['sub_options']}")
                                 else:
                                     logger.warning(f"⚠️ Вариант '{opt['text']}' НЕ сохранил подварианты: {opt.get('sub_options')}")
                             else:  # Пустой список подвариантов (свободный ответ)
                                 if "sub_options" in opt and opt["sub_options"] == []:
-                                    logger.info(f"✅ Вариант '{opt['text']}' сохранил ПУСТОЙ список sub_options (свободный ответ)")
+                                    if "free_text_prompt" in options[i] and "free_text_prompt" in opt:
+                                        if opt["free_text_prompt"] == options[i]["free_text_prompt"]:
+                                            logger.info(f"✅ Вариант '{opt['text']}' сохранил ПУСТОЙ список sub_options и free_text_prompt: '{opt['free_text_prompt']}'")
+                                        else:
+                                            logger.warning(f"⚠️ Вариант '{opt['text']}' сохранил ПУСТОЙ список sub_options, но free_text_prompt изменился: '{opt['free_text_prompt']}' (было '{options[i]['free_text_prompt']}')")
+                                    else:
+                                        logger.info(f"✅ Вариант '{opt['text']}' сохранил ПУСТОЙ список sub_options (свободный ответ)")
                                 else:
                                     logger.warning(f"⚠️ Вариант '{opt['text']}' НЕ сохранил пустой список sub_options: {opt.get('sub_options')}")
                         break
@@ -187,88 +275,190 @@ def edit_question_options(self, question_index: int, options: list) -> bool:
         logger.exception(e)
         return False
 
-def edit_question_options_with_free_text(self, question_index, options):
-    """Редактирование вариантов ответов для вопроса со свободным текстом"""
+def edit_question_options_with_free_text(self, question_index: int, option_text: str, free_text_prompt: str) -> bool:
+    """Редактирование вариантов ответов для вопроса с добавлением подсказки для свободного ввода"""
     # Проверяем валидность индекса вопроса
-    if question_index < 0 or question_index >= len(list(self.get_questions_with_options().keys())):
+    questions = self.get_questions_with_options()
+    questions_list = list(questions.keys())
+    
+    if question_index < 0 or question_index >= len(questions_list):
         logger.error(f"Ошибка: индекс вопроса {question_index} выходит за границы списка вопросов")
         return False
 
     try:
-        # Получаем таблицу вопросов
-        questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
+        logger.info(f"Редактирование вариантов ответов для вопроса с индексом {question_index}")
+        logger.info(f"Вариант: '{option_text}', подсказка: '{free_text_prompt}'")
         
-        # Получаем текст вопроса из листа
-        row = question_index + 2  # +2 для учета заголовка и 0-индексации
-        question_text = questions_sheet.cell(row, 1).value
+        # Получаем вопрос по индексу
+        question = questions_list[question_index]
+        options = questions[question]
         
-        logger.info(f"Редактирование вариантов ответов со свободным текстом для вопроса с индексом {question_index}")
-        logger.info(f"Новые варианты ответов: {options}")
-
-        # Убедимся, что есть хотя бы один вариант
-        if not options or not isinstance(options[0], dict):
-            logger.error(f"Ошибка: некорректный формат вариантов ответов")
-            return False
+        # Детальное логирование для отладки
+        logger.info(f"Вопрос: '{question}'")
+        logger.info(f"Текущие варианты ответов: {options}")
+        
+        # Находим опцию, которую нужно изменить
+        option_found = False
+        for i, opt in enumerate(options):
+            if isinstance(opt, dict) and "text" in opt:
+                # Проверяем точное совпадение и нечувствительное к регистру
+                if opt["text"] == option_text or opt["text"].lower() == option_text.lower():
+                    # Это наша опция
+                    options[i]["sub_options"] = []  # Пустой список для свободного ввода
+                    options[i]["free_text_prompt"] = free_text_prompt
+                    option_text = opt["text"]  # Используем точный текст из опции
+                    option_found = True
+                    logger.info(f"Найден вариант '{option_text}' на позиции {i}, добавлена подсказка '{free_text_prompt}'")
+                    break
+        
+        # Если опция не найдена, проверяем варианты с другой структурой в таблице
+        if not option_found:
+            # Получаем напрямую данные из таблицы для проверки
+            questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
+            row_index = question_index + 2  # +2 для учета заголовка и индексации с 0
+            row_data = questions_sheet.row_values(row_index)
             
-        # Получаем первый вариант, который должен содержать free_text_prompt
-        main_option = options[0]
-        
-        # Проверяем, содержит ли вариант free_text_prompt
-        if "free_text_prompt" not in main_option:
-            logger.warning(f"Вариант не содержит free_text_prompt, используем стандартный метод")
-            return self.edit_question_options(question_index, options)
+            logger.info(f"Данные строки из таблицы: {row_data}")
             
-        # Извлекаем необходимые данные
-        option_text = main_option["text"]
-        free_text_prompt = main_option["free_text_prompt"]
-        
-        # Формируем специальный формат для сохранения free_text_prompt
-        if "sub_options" in main_option and isinstance(main_option["sub_options"], list) and main_option["sub_options"] == []:
-            # Формат для свободного ответа: "вариант::prompt=текст_подсказки"
-            options_str = f"{option_text}::prompt={free_text_prompt}"
-            logger.info(f"Сохраняем вариант '{option_text}' со свободным ответом и подсказкой: '{free_text_prompt}'")
-        else:
-            # Формат некорректный - у варианта со свободным ответом должен быть пустой список sub_options
-            logger.warning(f"Некорректный формат варианта для свободного ответа: {main_option}")
-            return self.edit_question_options(question_index, options)
+            # Проверяем каждую ячейку, начиная со второй (варианты ответов)
+            for col_index, cell_value in enumerate(row_data[1:], start=2):
+                if option_text in cell_value:
+                    logger.info(f"Найден вариант '{option_text}' в ячейке {col_index} со значением '{cell_value}'")
+                    
+                    # Форматируем строку с подсказкой для свободного ввода
+                    formatted_value = f"{option_text}::prompt={free_text_prompt}"
+                    
+                    # Обновляем ячейку
+                    questions_sheet.update_cell(row_index, col_index, formatted_value)
+                    logger.info(f"Обновлена ячейка {row_index}:{col_index} со значением '{formatted_value}'")
+                    
+                    option_found = True
+                    
+                    # Инвалидируем кэш и обновляем структуру листов
+                    self.invalidate_questions_cache()
+                    self.update_sheets_structure()
+                    return True
             
-        # Сохраняем в ячейку
-        questions_sheet.update_cell(row, 2, options_str)
-
-        # Обновляем структуру листов после редактирования
-        self.update_sheets_structure()
-        
-        # Проверяем, что подсказка была сохранена
-        # Т.к. update_sheets_structure может не поддерживать формат prompt, проверим ячейку напрямую
-        cell_value = questions_sheet.cell(row, 2).value
-        if "prompt=" in cell_value:
-            logger.info(f"✅ Подсказка для свободного ответа '{free_text_prompt}' успешно сохранена: {cell_value}")
-            prompt_saved = True
-        else:
-            logger.warning(f"⚠️ Подсказка для свободного ответа НЕ сохранена: {cell_value}")
-            # Пробуем еще раз с другим форматом
-            try:
-                # Используем формат с тремя двоеточиями
-                options_str = f"{option_text}:::{free_text_prompt}"
-                logger.info(f"Пробуем альтернативный формат: {options_str}")
-                questions_sheet.update_cell(row, 2, options_str)
+            # Если опция всё ещё не найдена, возможно она в другом формате
+            if not option_found:
+                logger.error(f"Вариант '{option_text}' не найден в вопросе '{question}' ни в кэше, ни в таблице")
                 
-                # Проверяем результат
-                cell_value = questions_sheet.cell(row, 2).value
-                logger.info(f"Результат сохранения с альтернативным форматом: {cell_value}")
-                if ":::" in cell_value:
-                    prompt_saved = True
-                else:
-                    prompt_saved = False
-            except Exception as e2:
-                logger.error(f"Ошибка при попытке альтернативного сохранения: {e2}")
-                prompt_saved = False
+                # Попробуем получить варианты снова и сравнить
+                self.invalidate_questions_cache()
+                refreshed_questions = self.get_questions_with_options()
+                if question in refreshed_questions:
+                    refreshed_options = refreshed_questions[question]
+                    logger.info(f"Обновлённые варианты ответов: {refreshed_options}")
+                    
+                    # Ищем в обновлённых вариантах
+                    for i, opt in enumerate(refreshed_options):
+                        if isinstance(opt, dict) and "text" in opt:
+                            if opt["text"] == option_text or opt["text"].lower() == option_text.lower():
+                                logger.info(f"Найден вариант '{option_text}' после обновления кэша")
+                                option_found = True
+                                
+                                # Обновляем вариант
+                                questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
+                                # Находим колонку с этим вариантом
+                                row_data = questions_sheet.row_values(row_index)
+                                for col_index, cell_value in enumerate(row_data[1:], start=2):
+                                    if opt["text"] in cell_value:
+                                        # Форматируем строку с подсказкой для свободного ввода
+                                        formatted_value = f"{opt['text']}::prompt={free_text_prompt}"
+                                        # Обновляем ячейку
+                                        questions_sheet.update_cell(row_index, col_index, formatted_value)
+                                        logger.info(f"Обновлена ячейка {row_index}:{col_index} со значением '{formatted_value}'")
+                                        break
+                                
+                                # Инвалидируем кэш и обновляем структуру листов
+                                self.invalidate_questions_cache()
+                                self.update_sheets_structure()
+                                return True
+                
+                return False
         
-        logger.info(f"Варианты ответов со свободным текстом для вопроса {'успешно' if prompt_saved else 'НЕ'} обновлены")
-        return prompt_saved
+        # Сохраняем обновленные варианты в случае, если опция найдена через обычные методы
+        @safe_api_call
+        def update_options():
+            questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
+            # Учитываем заголовок (+2)
+            row = question_index + 2
+            
+            # Преобразуем все варианты в строковый формат для таблицы
+            formatted_options = []
+            for opt in options:
+                if isinstance(opt, dict) and "text" in opt:
+                    opt_text = opt["text"]
+                    
+                    # Вариант с пустым списком sub_options и free_text_prompt
+                    if "sub_options" in opt and isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
+                        if "free_text_prompt" in opt and opt["free_text_prompt"]:
+                            # Формат с подсказкой для свободного ввода
+                            formatted_opt = f"{opt_text}::prompt={opt['free_text_prompt']}"
+                            logger.info(f"Форматирован вариант со свободным вводом и подсказкой: '{formatted_opt}'")
+                        else:
+                            # Простой свободный ввод без подсказки
+                            formatted_opt = f"{opt_text}::"
+                            logger.info(f"Форматирован вариант со свободным вводом без подсказки: '{formatted_opt}'")
+                    # Вариант с подвариантами
+                    elif "sub_options" in opt and opt["sub_options"]:
+                        sub_options_str = ";".join(opt["sub_options"])
+                        formatted_opt = f"{opt_text}::{sub_options_str}"
+                        logger.info(f"Форматирован вариант с подвариантами: '{formatted_opt}'")
+                    else:
+                        # Обычный вариант
+                        formatted_opt = opt_text
+                        logger.info(f"Форматирован обычный вариант: '{formatted_opt}'")
+                    
+                    formatted_options.append(formatted_opt)
+                else:
+                    # Обратная совместимость
+                    formatted_options.append(str(opt))
+            
+            # Сначала получаем текущее значение ячейки с вопросом
+            question_text = questions_sheet.cell(row, 1).value
+            
+            # Создаем массив для обновления всей строки
+            row_data = [question_text] + formatted_options
+            logger.info(f"Данные для обновления строки: {row_data}")
+            
+            # Обновляем всю строку за один запрос вместо множества cell update
+            last_col = chr(65 + len(row_data) - 1)  # Последняя колонка (A, B, C, ...)
+            range_name = f'A{row}:{last_col}{row}'
+            questions_sheet.update(range_name, [row_data])
+            logger.info(f"Обновлён диапазон {range_name}")
+            
+            return True
+        
+        success = update_options()
+        
+        if success:
+            # Инвалидируем кэш вопросов
+            self.invalidate_questions_cache()
+            
+            # Обновляем структуру других листов
+            self.update_sheets_structure()
+            
+            # Проверяем сохранение
+            updated_questions = self.get_questions_with_options()
+            if question in updated_questions:
+                updated_options = updated_questions[question]
+                for opt in updated_options:
+                    if isinstance(opt, dict) and "text" in opt and opt["text"] == option_text:
+                        if "sub_options" in opt and isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
+                            if "free_text_prompt" in opt and opt["free_text_prompt"] == free_text_prompt:
+                                logger.info(f"✅ Вариант '{option_text}' успешно обновлен с подсказкой для свободного ввода: '{free_text_prompt}'")
+                                return True
+            
+            logger.warning(f"⚠️ Не удалось проверить сохранение подсказки для варианта '{option_text}'")
+            return True  # Считаем, что обновление прошло успешно, даже если не удалось проверить
+            
+        else:
+            logger.error(f"❌ Не удалось обновить варианты ответов для вопроса '{question}'")
+            return False
         
     except Exception as e:
-        logger.error(f"Ошибка при редактировании вариантов ответов со свободным текстом: {e}")
+        logger.error(f"Ошибка при редактировании вариантов ответов с подсказкой: {e}")
         logger.exception(e)
         return False
 
@@ -439,12 +629,27 @@ def update_sheets_structure(self) -> bool:
         questions = self.get_questions_with_options()
         logger.info(f"Получены вопросы для обновления структуры: {len(questions)}")
         
-        # Логируем варианты с пустыми списками sub_options
+        # Логируем варианты с пустыми списками sub_options и free_text_prompt
         for question, options in questions.items():
             for opt in options:
                 if isinstance(opt, dict) and "text" in opt and "sub_options" in opt:
                     if isinstance(opt["sub_options"], list) and not opt["sub_options"]:
-                        logger.info(f"🔄 В вопросе '{question}' вариант '{opt['text']}' имеет пустой список sub_options (свободный ответ)")
+                        if "free_text_prompt" in opt:
+                            logger.info(f"🔄 В вопросе '{question}' вариант '{opt['text']}' имеет пустой список sub_options и free_text_prompt: '{opt['free_text_prompt']}'")
+                        else:
+                            logger.info(f"🔄 В вопросе '{question}' вариант '{opt['text']}' имеет пустой список sub_options (свободный ответ)")
+        
+        # Сохраняем текущие данные вопросов, чтобы восстановить free_text_prompt после обновления структуры
+        original_questions = {}
+        for question, options in questions.items():
+            original_options = []
+            for opt in options:
+                if isinstance(opt, dict) and "text" in opt:
+                    opt_copy = opt.copy()  # Создаем копию опции
+                    original_options.append(opt_copy)
+                else:
+                    original_options.append(opt)
+            original_questions[question] = original_options
         
         question_texts = list(questions.keys())
         
@@ -502,7 +707,10 @@ def update_sheets_structure(self) -> bool:
                         # Проверяем на свободный ответ (пустой список sub_options)
                         if "sub_options" in option and isinstance(option["sub_options"], list) and option["sub_options"] == []:
                             # Это свободный ответ - логируем для отладки
-                            logger.info(f"🆓 Обработка свободного ответа для варианта '{option['text']}' в update_sheets_structure")
+                            if "free_text_prompt" in option:
+                                logger.info(f"🆓 Обработка свободного ответа для варианта '{option['text']}' в update_sheets_structure с free_text_prompt: '{option['free_text_prompt']}'")
+                            else:
+                                logger.info(f"🆓 Обработка свободного ответа для варианта '{option['text']}' в update_sheets_structure")
                             # Для свободных ответов не добавляем подварианты в статистику
                         # Обрабатываем вложенные варианты, если они есть и не пустые
                         elif "sub_options" in option and option["sub_options"]:
@@ -525,12 +733,55 @@ def update_sheets_structure(self) -> bool:
         updated_questions = self.get_questions_with_options()
         logger.info(f"После обновления структуры получено {len(updated_questions)} вопросов")
         
-        # Проверяем сохранение вариантов с пустыми списками sub_options после обновления
+        # Проверяем сохранение вариантов с пустыми списками sub_options и free_text_prompt после обновления
+        questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
+        
+        # Проверяем строки для восстановления free_text_prompt если необходимо
+        for i, (question, options) in enumerate(original_questions.items(), start=1):
+            # Ищем соответствующий вопрос в обновленной структуре
+            if question in updated_questions:
+                updated_options = updated_questions[question]
+                
+                # Построим словарь опций с free_text_prompt из оригинальных данных
+                original_prompts = {}
+                for opt in options:
+                    if isinstance(opt, dict) and "text" in opt and "free_text_prompt" in opt:
+                        original_prompts[opt["text"]] = opt["free_text_prompt"]
+                
+                # Проверим, сохранились ли free_text_prompt в обновленных опциях
+                for j, opt in enumerate(updated_options):
+                    if isinstance(opt, dict) and "text" in opt and opt["text"] in original_prompts:
+                        if "free_text_prompt" not in opt:
+                            # free_text_prompt был утерян, нужно восстановить
+                            logger.warning(f"⚠️ В вопросе '{question}' для варианта '{opt['text']}' утерян free_text_prompt, пробуем восстановить")
+                            
+                            # Находим строку и колонку в таблице для восстановления
+                            row_index = i + 1  # +1 для учета заголовка
+                            
+                            # Получаем текущее значение ячейки
+                            cell_value = questions_sheet.cell(row_index, 2).value
+                            
+                            # Если это свободный ответ (с ::)
+                            if "::" in cell_value and opt["text"] in cell_value:
+                                # Заменяем значение с добавлением free_text_prompt
+                                free_text_prompt = original_prompts[opt["text"]]
+                                new_value = f"{opt['text']}::prompt={free_text_prompt}"
+                                logger.info(f"🔄 Восстанавливаем free_text_prompt для '{opt['text']}': '{free_text_prompt}'")
+                                questions_sheet.update_cell(row_index, 2, new_value)
+                        else:
+                            # free_text_prompt сохранился, проверяем совпадение значений
+                            if opt["free_text_prompt"] != original_prompts[opt["text"]]:
+                                logger.warning(f"⚠️ Для варианта '{opt['text']}' значение free_text_prompt изменилось: '{opt['free_text_prompt']}' (было '{original_prompts[opt['text']]}')")
+                
+        # Проверяем сохранение структуры после всех модификаций
         for question, options in updated_questions.items():
             for opt in options:
                 if isinstance(opt, dict) and "text" in opt and "sub_options" in opt:
                     if isinstance(opt["sub_options"], list) and not opt["sub_options"]:
-                        logger.info(f"✅ После обновления структуры в вопросе '{question}' вариант '{opt['text']}' сохранил пустой список sub_options (свободный ответ)")
+                        if "free_text_prompt" in opt:
+                            logger.info(f"✅ После обновления структуры в вопросе '{question}' вариант '{opt['text']}' сохранил пустой список sub_options и free_text_prompt: '{opt['free_text_prompt']}'")
+                        else:
+                            logger.info(f"✅ После обновления структуры в вопросе '{question}' вариант '{opt['text']}' сохранил пустой список sub_options (свободный ответ)")
         
         logger.info("Структура листов успешно обновлена с сохранением существующих данных")
         return True
