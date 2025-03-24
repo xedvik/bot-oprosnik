@@ -38,11 +38,16 @@ class BaseHandler:
         # Очищаем данные пользователя
         context.user_data.clear()
         
-        # Регистрируем пользователя, если он еще не зарегистрирован
-        if not self.sheets.is_user_exists(user.id):
+        # Проверяем, существует ли пользователь, и регистрируем его при необходимости
+        is_new_user = not self.sheets.is_user_exists(user.id)
+        if is_new_user:
             username = user.username if user.username else "Не указан"
-            if not self.sheets.add_user(user.id, username):
-                logger.error("регистрация_пользователя", details={"user_id": user.id})
+            if self.sheets.add_user(user.id, username):
+                logger.user_action(user.id, "Регистрация нового пользователя", details={"username": username})
+            else:
+                logger.error("регистрация_пользователя", details={"user_id": user.id, "username": username})
+        else:
+            logger.user_action(user.id, "Повторный запуск бота", details={"is_new_user": False})
         
         # Создаем клавиатуру с двумя кнопками
         keyboard = [

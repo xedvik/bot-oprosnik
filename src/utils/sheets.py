@@ -768,7 +768,20 @@ class GoogleSheets:
             values = self.get_sheet_values('users')
             if not values or len(values) == 1:  # Только заголовки
                 return 1
-            return max(int(row[0]) for row in values[1:]) + 1
+                
+            # Безопасное извлечение ID с обработкой ошибок
+            max_id = 0
+            for row in values[1:]:  # Пропускаем заголовок
+                try:
+                    if row and row[0] and row[0].strip():
+                        user_id = int(row[0])
+                        if user_id > max_id:
+                            max_id = user_id
+                except (ValueError, TypeError, IndexError):
+                    # Пропускаем некорректные значения
+                    continue
+                    
+            return max_id + 1
         except Exception as e:
             self.logger.error("получение_id_пользователя", e)
             return 1
@@ -808,6 +821,12 @@ class GoogleSheets:
     def add_user(self, telegram_id: int, username: str) -> bool:
         """Добавление нового пользователя"""
         try:
+            # Проверяем, существует ли пользователь с таким telegram_id
+            if self.is_user_exists(telegram_id):
+                self.logger.user_action(telegram_id, "Повторная регистрация", 
+                                      details={"username": username})
+                return True  # Пользователь уже существует, считаем операцию успешной
+                
             # Получаем лист пользователей
             users_sheet = self.sheet.worksheet(self.SHEET_NAMES['users'])
             
@@ -833,10 +852,18 @@ class GoogleSheets:
     def is_user_exists(self, telegram_id: int) -> bool:
         """Проверка существования пользователя"""
         try:
-            values = self.get_sheet_values('users')
-            if not values or len(values) == 1:  # Только заголовки
-                return False
-            return any(str(telegram_id) == row[1] for row in values[1:])
+            # Оптимизированный поиск с использованием фильтра по столбцу telegram_id
+            users_sheet = self.sheet.worksheet(self.SHEET_NAMES['users'])
+            
+            # Находим ячейки, содержащие telegram_id
+            cell_list = users_sheet.findall(str(telegram_id))
+            
+            # Проверяем, находится ли хотя бы одна из найденных ячеек во 2-м столбце (индекс 1)
+            for cell in cell_list:
+                if cell.col == 2:  # Столбец B (telegram_id)
+                    return True
+                    
+            return False
         except Exception as e:
             self.logger.error("проверка_существования_пользователя", e, details={"telegram_id": telegram_id})
             return False
