@@ -28,12 +28,6 @@ def create_survey_handler(survey_handler: SurveyHandler) -> ConversationHandler:
     # Добавляем состояния для ожидания начала и подтверждения
     survey_states[WAITING_START] = [
         TelegramMessageHandler(filters.Regex(r"^▶️ Зарегистрироваться$"), survey_handler.begin_survey),
-        TelegramMessageHandler(filters.Regex(r"^ℹ️ Узнать о мероприятии$"), survey_handler.show_event_info)
-    ]
-    
-    survey_states[WAITING_EVENT_INFO] = [
-        TelegramMessageHandler(filters.Regex(r"^▶️ Зарегистрироваться$"), survey_handler.begin_survey),
-        TelegramMessageHandler(filters.Regex(r"^🔙 Вернуться$"), survey_handler.back_to_start)
     ]
     
     survey_states[CONFIRMING] = [

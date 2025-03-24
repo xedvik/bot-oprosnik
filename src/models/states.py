@@ -5,7 +5,6 @@
 # Состояния для основного опроса
 WAITING_START = "WAITING_START"
 CONFIRMING = "CONFIRMING"
-WAITING_EVENT_INFO = "WAITING_EVENT_INFO"
 
 # Состояния для вложенных вариантов ответов
 SUB_OPTIONS = "SUB_OPTIONS"

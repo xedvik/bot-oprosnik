@@ -161,8 +161,6 @@ async def main():
     application.add_handler(CommandHandler("stats", survey_handler.show_statistics, 
                                           filters=filters.User(user_id=admin_ids)))
     
-    # Добавляем обработчик команды event_info для всех пользователей
-    application.add_handler(CommandHandler("event_info", survey_handler.show_event_info))
     logger.data_processing("система", "Обработчики зарегистрированы", details={"action": "register_handlers_complete"})
     
     # Запуск бота

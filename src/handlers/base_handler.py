@@ -47,7 +47,6 @@ class BaseHandler:
         # Создаем клавиатуру с двумя кнопками
         keyboard = [
             [KeyboardButton("▶️ Зарегистрироваться")],
-            [KeyboardButton("ℹ️ Узнать о мероприятии")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
@@ -113,12 +112,7 @@ class BaseHandler:
         message_data = self.sheets.get_message('finish')
         formatted_message = message_data["text"].format(username=user.first_name)
         
-        # Создаем клавиатуру с кнопкой "узнать о мероприятии"
-        keyboard = [
-            [KeyboardButton("ℹ️ Узнать о мероприятии")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
+
         # Проверяем, есть ли изображение для отправки
         image_url = message_data.get("image", "")
         if image_url and image_url.strip():
@@ -144,49 +138,6 @@ class BaseHandler:
                 reply_markup=reply_markup
             )
         return ConversationHandler.END
-        
-    async def show_event_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает информацию о мероприятии"""
-        user = update.effective_user
-        logger.user_action(user.id, "Запрос информации о мероприятии")
-        
-        # Создаем клавиатуру для возврата
-        keyboard = [
-            [KeyboardButton("▶️ Зарегистрироваться")],
-            [KeyboardButton("🔙 Вернуться")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
-        # Получаем информацию о мероприятии
-        message_data = self.sheets.get_message('event_info')
-        event_info = message_data["text"].format(username=user.first_name)
-        
-        # Проверяем, есть ли изображение для отправки
-        image_url = message_data.get("image", "")
-        if image_url and image_url.strip():
-            try:
-                # Отправляем изображение с подписью
-                await update.message.reply_photo(
-                    photo=image_url,
-                    caption=event_info,
-                    reply_markup=reply_markup
-                )
-            except Exception as e:
-                logger.error("отправка_изображения", e, user_id=user.id, 
-                            details={"message_type": "event_info"})
-                # В случае ошибки отправляем только текст
-                await update.message.reply_text(
-                    event_info,
-                    reply_markup=reply_markup
-                )
-        else:
-            # Если изображения нет, отправляем только текст
-            await update.message.reply_text(
-                event_info,
-                reply_markup=reply_markup
-            )
-        
-        return "WAITING_EVENT_INFO"
         
     async def back_to_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Возвращает пользователя к начальному экрану"""

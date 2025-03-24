@@ -1142,8 +1142,10 @@ class AdminHandler(BaseHandler):
                             
                             # Сначала копируем стандартные состояния, не связанные с конкретными вопросами
                             for state, handlers_list in handler.states.items():
-                                if not state.startswith("QUESTION_") or state in ["WAITING_START", "WAITING_EVENT_INFO", "CONFIRMING", "SUB_OPTIONS"]:
-                                    new_states[state] = handlers_list
+                                # Пропускаем не вопросы и вложенные состояния
+                                if not state.startswith("QUESTION_") or state in ["WAITING_START", "CONFIRMING", "SUB_OPTIONS"]:
+                                    continue
+                                new_states[state] = handlers_list
                             
                             # Затем добавляем состояния для текущих вопросов
                             for i in range(len(self.questions)):
@@ -1373,12 +1375,11 @@ class AdminHandler(BaseHandler):
         
         for i, user in enumerate(users, start=1):
             user_id = user.get('user_id', 'Неизвестно')
-            event_info = user.get('event_info', 'Не указано')
             name = user.get('name', 'Неизвестно')
             category = user.get('category', 'Не указана')
             survey_date = user.get('survey_date', 'Неизвестно')
             
-            users_text += f"{i}. ID: `{user_id}`\n   Имя: {name}\n   Инфо: {event_info}\n   Категория: {category}\n   Дата опроса: {survey_date}\n\n"
+            users_text += f"{i}. ID: `{user_id}`\n   Имя: {name}\n   Категория: {category}\n   Дата опроса: {survey_date}\n\n"
         
         # Проверяем длину текста
         if len(users_text) > 4096:
