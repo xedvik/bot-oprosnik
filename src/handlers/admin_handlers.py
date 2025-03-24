@@ -2,7 +2,6 @@
 Обработчики для административных команд
 """
 
-import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters, CommandHandler
 
@@ -11,9 +10,10 @@ from utils.sheets import GoogleSheets
 from handlers.base_handler import BaseHandler
 from utils.helpers import setup_commands  # Импортируем функцию setup_commands
 from config import QUESTIONS_SHEET  # Добавляем импорт QUESTIONS_SHEET
+from utils.logger import get_logger
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
+# Получаем логгер для модуля
+logger = get_logger()
 
 class AdminHandler(BaseHandler):
     """Обработчики для административных команд"""
@@ -26,7 +26,8 @@ class AdminHandler(BaseHandler):
 
     async def list_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Вывод списка вопросов"""
-        logger.info(f"Пользователь {update.effective_user.id} запросил список вопросов")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Запрос списка вопросов")
         
         # Проверяем, есть ли вопросы
         if not self.questions:
@@ -86,7 +87,8 @@ class AdminHandler(BaseHandler):
     
     async def add_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало добавления нового вопроса"""
-        logger.info(f"Пользователь {update.effective_user.id} начал добавление вопроса")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Начало добавления вопроса")
         
         # Очищаем данные пользователя
         context.user_data.clear()
@@ -101,8 +103,9 @@ class AdminHandler(BaseHandler):
     
     async def handle_new_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка текста нового вопроса"""
+        user_id = update.effective_user.id
         question_text = update.message.text
-        logger.info(f"Получен текст нового вопроса: {question_text}")
+        logger.admin_action(user_id, "Ввод текста вопроса", details={"text": question_text})
         
         # Сохраняем текст вопроса
         context.user_data['new_question'] = question_text
@@ -124,8 +127,9 @@ class AdminHandler(BaseHandler):
     
     async def handle_options_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка выбора типа ответов"""
+        user_id = update.effective_user.id
         choice = update.message.text
-        logger.info(f"Выбран тип ответов: {choice}")
+        logger.admin_action(user_id, "Выбор типа ответов", details={"тип": choice})
         
         if choice == "✨ Свободный ответ":
             # Добавляем вопрос без вариантов ответов
@@ -180,8 +184,9 @@ class AdminHandler(BaseHandler):
     
     async def handle_option_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка ввода вариантов ответов"""
+        user_id = update.effective_user.id
         choice = update.message.text.strip()
-        logger.info(f"Получены варианты ответов: {choice}")
+        logger.admin_action(user_id, "Ввод варианта ответа", details={"вариант": choice})
         
         # Проверяем наличие необходимых данных
         if 'new_question' not in context.user_data:
@@ -302,11 +307,12 @@ class AdminHandler(BaseHandler):
     
     async def handle_nested_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработка запроса на добавление вложенных вариантов ответа"""
+        user_id = update.effective_user.id
         text = update.message.text
         
         # Логируем текущее состояние данных пользователя для отладки
-        logger.info(f"Обработка выбора для вложенных вариантов: {text}")
-        logger.info(f"Текущие состояния в context.user_data: {context.user_data.keys()}")
+        logger.admin_action(user_id, "Обработка вложенных вариантов", details={"выбор": text})
+        logger.data_processing("состояние", "Состояние данных пользователя", details={"keys": list(context.user_data.keys())})
         
         # Если пользователь выбрал "Нет", завершаем добавление вложенных вариантов
         if text == "❌ Нет, завершить":
@@ -323,7 +329,7 @@ class AdminHandler(BaseHandler):
         
         # Обработка специальных кнопок
         if text == "✅ Да, к другому варианту" or text == "✅ Да, добавить вложенные варианты":
-            logger.info(f"Получена специальная кнопка '{text}' в режиме добавления подвариантов")
+            logger.admin_action(user_id, "Выбор специальной кнопки", details={"кнопка": text})
             
             # Если мы находимся в состоянии выбора родительского варианта
             if 'selecting_parent_option' in context.user_data:
@@ -445,7 +451,7 @@ class AdminHandler(BaseHandler):
         # Если пользователь выбрал "Сделать свободным"
         if text == "✨ Сделать свободным" and 'parent_option' in context.user_data:
             parent_option_text = context.user_data['parent_option']
-            logger.info(f"Пользователь выбрал 'Сделать свободным' для варианта {parent_option_text}")
+            logger.admin_action(user_id, "Выбор свободного ответа", details={"вариант": parent_option_text})
             
             question = None
             question_num = -1
@@ -453,7 +459,8 @@ class AdminHandler(BaseHandler):
             # Получаем текущий вопрос
             if 'current_question' in context.user_data:
                 question = context.user_data['current_question']
-                logger.info(f"Текущий вопрос: '{question}', родительский вариант: '{parent_option_text}'")
+                logger.data_processing("связь", "Связь вопроса и варианта",
+                                       details={"вопрос": question, "вариант": parent_option_text})
                 
                 # Находим номер вопроса
                 for i, q in enumerate(self.questions):
@@ -466,18 +473,25 @@ class AdminHandler(BaseHandler):
             current_options = []
             if question in self.questions_with_options:
                 current_options = self.questions_with_options[question]
-                logger.info(f"Текущие варианты для вопроса '{question}': {current_options}")
+                logger.data_processing("варианты", "Текущие варианты ответа",
+                                       details={"вопрос": question, "варианты": current_options})
                 
                 # Находим вариант, который нужно изменить
+                option_index = None
                 for i, opt in enumerate(current_options):
                     if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
                         # Устанавливаем пустой список подвариантов (свободный ответ)
                         current_options[i]["sub_options"] = []
-                        logger.info(f"Установлен пустой список sub_options для '{parent_option_text}' - свободный ответ. Структура: {current_options[i]}")
+                        option_index = i  # Сохраняем индекс найденного варианта
+                        logger.data_processing("свободный_ответ", "Установка свободного ответа",
+                                               details={"вариант": parent_option_text, "структура": current_options[i]})
                         break
             
             # Сохраняем изменения в таблицу
-            logger.info(f"Отправка на сохранение для вопроса {question_num}, вариант '{parent_option_text}' с пустым списком sub_options: {current_options}")
+            logger.data_processing("изменения", "Сохранение изменений",
+                                   details={"вопрос_индекс": question_num, 
+                                           "вариант": parent_option_text, 
+                                           "тип": "свободный ответ"})
             success = self.sheets.edit_question_options(question_index=question_num, options=current_options)
             
             if success:
@@ -493,23 +507,15 @@ class AdminHandler(BaseHandler):
                         if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
                             found_option = opt
                             if "sub_options" in opt and isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
-                                logger.info(f"✅ Проверка после обновления: вариант '{parent_option_text}' сохранил пустой список sub_options=[] (свободный ответ)")
+                                logger.admin_action(user_id, "Проверка свободного ответа успешна", 
+                                                  details={"вариант": parent_option_text})
                             else:
-                                logger.warning(f"⚠️ Проверка после обновления: вариант '{parent_option_text}' НЕ имеет пустого списка sub_options! Текущая структура: {opt}")
+                                logger.warning(f"Вариант не имеет пустого списка sub_options (free_answer_check_fail)", 
+                                           details={"вариант": parent_option_text, "структура": opt})
                             break
                     
-                    # Детализируем структуру вопроса после обновления для диагностики
-                    logger.info(f"Структура вопроса '{question}' после обновления:")
-                    for i, opt in enumerate(updated_options, start=1):
-                        if isinstance(opt, dict) and "text" in opt:
-                            if "sub_options" in opt and isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
-                                logger.info(f"  Опция {i}: '{opt['text']}', sub_options: []")
-                            elif "sub_options" in opt and opt["sub_options"]:
-                                logger.info(f"  Опция {i}: '{opt['text']}', sub_options: {opt['sub_options']}")
-                            else:
-                                logger.info(f"  Опция {i}: '{opt['text']}', без sub_options")
-                        else:
-                            logger.info(f"  Опция {i}: {opt}, без sub_options")
+                    # Детализируем структуру вопроса после обновления
+                    logger.data_processing("структура", "Структура вопроса после обновления", details={"вопрос": question})
                 
                 # Обновляем списки вопросов в других обработчиках
                 await self._update_handlers_questions(update)
@@ -524,8 +530,23 @@ class AdminHandler(BaseHandler):
                 context.user_data['parent_option'] = parent_option_text
                 context.user_data['editing_question'] = question
                 
+                # Добавляем индексы вопроса и варианта, которые нужны для handle_add_free_text_prompt
+                context.user_data['question_index'] = question_num
+                context.user_data['option_index'] = option_index
+                
+                # Проверяем, что индекс варианта был найден
+                if option_index is None:
+                    logger.warning(f"Индекс варианта не найден (вариант_не_найден)", 
+                                  details={"вариант": parent_option_text, "вопрос": question})
+                    await update.message.reply_text(
+                        f"❌ Не удалось найти вариант '{parent_option_text}' в вопросе. Попробуйте еще раз.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return ConversationHandler.END
+                
                 # Переходим к добавлению вопроса для свободного ответа
-                logger.info(f"Переход к состоянию ADDING_FREE_TEXT_PROMPT из handle_nested_options для варианта '{parent_option_text}'")
+                logger.admin_action(user_id, "Переход к добавлению подсказки для свободного ответа", 
+                                  details={"вариант": parent_option_text})
                 return ADDING_FREE_TEXT_PROMPT
             else:
                 await update.message.reply_text(
@@ -644,20 +665,23 @@ class AdminHandler(BaseHandler):
             # Проверка на специальные кнопки, которые не нужно добавлять как подварианты
             if text not in ["❌ Отмена", "✅ Да, к другому варианту", "✅ Да, добавить вложенные варианты", "❌ Нет, завершить"]:
                 context.user_data['sub_options'].append(text)
-                logger.info(f"Добавлен подвариант '{text}' для '{context.user_data['parent_option']}'")
+                logger.admin_action(user_id, "Добавление подварианта", 
+                                  details={"подвариант": text, "для_варианта": context.user_data['parent_option']})
                 
                 await update.message.reply_text(
                     f"✅ Подвариант '{text}' добавлен.\nВведите следующий или нажмите 'Готово'.",
                     reply_markup=ReplyKeyboardMarkup([["Готово"], ["❌ Отмена"]], resize_keyboard=True)
                 )
             else:
-                logger.info(f"Пропуск специальной кнопки '{text}', не добавляем как подвариант")
+                logger.data_processing("пропуск", "Пропуск специальной кнопки", 
+                                     details={"кнопка": text, "причина": "не добавляется как подвариант"})
         
         return ADDING_NESTED_OPTIONS
     
     async def clear_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало процесса очистки данных"""
-        logger.info(f"Пользователь {update.effective_user.id} запросил очистку данных")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Запрос на очистку данных")
         
         # Создаем клавиатуру для подтверждения
         keyboard = [
@@ -681,7 +705,7 @@ class AdminHandler(BaseHandler):
         user_id = update.effective_user.id
         
         if choice == "✅ Подтвердить очистку":
-            logger.info(f"[{user_id}] Подтверждена очистка данных")
+            logger.admin_action(user_id, "Подтверждена очистка данных")
             
             # Выполняем очистку
             success = self.sheets.clear_answers_and_stats()
@@ -691,20 +715,20 @@ class AdminHandler(BaseHandler):
                     "✅ Все ответы и статистика успешно очищены.",
                     reply_markup=ReplyKeyboardRemove()
                 )
-                logger.info(f"[{user_id}] Данные успешно очищены")
+                logger.admin_action(user_id, "Данные успешно очищены")
             else:
                 await update.message.reply_text(
                     "❌ Произошла ошибка при очистке данных. Пожалуйста, попробуйте позже.",
                     reply_markup=ReplyKeyboardRemove()
                 )
-                logger.error(f"[{user_id}] Ошибка при очистке данных")
+                logger.error("очистка_данных", "Не удалось очистить данные", details={"user_id": user_id})
         
         elif choice == "❌ Отмена":
             await update.message.reply_text(
                 "Очистка данных отменена.",
                 reply_markup=ReplyKeyboardRemove()
             )
-            logger.info(f"[{user_id}] Очистка данных отменена")
+            logger.admin_action(user_id, "Очистка данных отменена")
         
         else:
             await update.message.reply_text(
@@ -720,7 +744,8 @@ class AdminHandler(BaseHandler):
 
     async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало процесса добавления администратора"""
-        logger.info(f"Пользователь {update.effective_user.id} начал добавление администратора")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Начало добавления администратора")
         
         await update.message.reply_text(
             "Пожалуйста, отправьте ID пользователя, которого хотите сделать администратором.\n\n"
@@ -764,7 +789,7 @@ class AdminHandler(BaseHandler):
             return ADDING_ADMIN_NAME
 
         except Exception as e:
-            logger.error(f"Ошибка при добавлении администратора: {e}")
+            logger.error("добавление_администратора", e, details={"admin_id": message.text})
             await update.message.reply_text(
                 "❌ Произошла ошибка при добавлении администратора."
             )
@@ -775,9 +800,14 @@ class AdminHandler(BaseHandler):
         try:
             message = update.message
             admin_name = message.text
+            new_admin_id = context.user_data.get('new_admin_id')
 
             # Сохраняем имя в context
             context.user_data['admin_name'] = admin_name
+            
+            # Логируем действие
+            logger.admin_action(update.effective_user.id, "Добавление имени администратора", 
+                              details={"admin_id": new_admin_id, "name": admin_name})
 
             # Запрашиваем описание
             await message.reply_text(
@@ -787,7 +817,8 @@ class AdminHandler(BaseHandler):
             return ADDING_ADMIN_DESCRIPTION
 
         except Exception as e:
-            logger.error(f"Ошибка при сохранении имени администратора: {e}")
+            logger.error("сохранение_имени_администратора", e, 
+                       details={"admin_id": context.user_data.get('new_admin_id')})
             await update.message.reply_text(
                 "❌ Произошла ошибка при сохранении имени администратора."
             )
@@ -797,38 +828,69 @@ class AdminHandler(BaseHandler):
         """Обработка добавления нового администратора - шаг 3: описание"""
         try:
             message = update.message
+            user_id = update.effective_user.id
             admin_description = message.text
             new_admin_id = context.user_data.get('new_admin_id')
             admin_name = context.user_data.get('admin_name')
+            
+            # Логируем действие
+            logger.admin_action(user_id, "Добавление описания администратора", 
+                              details={"admin_id": new_admin_id, "name": admin_name})
 
             # Добавляем администратора со всеми данными
             success = self.sheets.add_admin(new_admin_id, admin_name, admin_description)
 
             if success:
-                # Обновляем список админов в памяти
-                admin_ids = self.sheets.get_admins()
-                # Обновляем команды для нового админа
-                await setup_commands(self.application, admin_ids)
-                
-                admin_info = await self.sheets.get_admin_info(new_admin_id)
-                await message.reply_text(
-                    f"✅ Администратор успешно добавлен:\n"
-                    f"ID: {new_admin_id}\n"
-                    f"Имя: {admin_name}\n"
-                    f"Описание: {admin_description}\n"
-                    f"Информация: {admin_info}"
-                )
+                try:
+                    # Обновляем список админов в памяти
+                    admin_ids = self.sheets.get_admins()
+                    # Обновляем команды для нового админа
+                    await setup_commands(self.application, admin_ids)
+                    
+                    # Пытаемся получить информацию об администраторе, но обрабатываем возможный тайм-аут
+                    try:
+                        admin_info = await self.sheets.get_admin_info(new_admin_id)
+                    except Exception as e:
+                        logger.warning(f"Не удалось получить информацию о добавленном администраторе (admin_info_error)", 
+                                     details={"admin_id": new_admin_id, "причина": str(e)})
+                        admin_info = f"ID: {new_admin_id} (информация недоступна)"
+                    
+                    await message.reply_text(
+                        f"✅ Администратор успешно добавлен:\n"
+                        f"ID: {new_admin_id}\n"
+                        f"Имя: {admin_name}\n"
+                        f"Описание: {admin_description}\n"
+                        f"Информация: {admin_info}"
+                    )
+                    
+                    logger.admin_action(user_id, "Администратор успешно добавлен", 
+                                      details={"admin_id": new_admin_id, "name": admin_name})
+                except Exception as e:
+                    # Если произошла ошибка при настройке команд или получении информации, но админ уже добавлен
+                    logger.error("ошибка_после_добавления_администратора", str(e), 
+                               details={"admin_id": new_admin_id})
+                    await message.reply_text(
+                        f"✅ Администратор добавлен, но произошла ошибка при настройке бота:\n"
+                        f"ID: {new_admin_id}\n"
+                        f"Имя: {admin_name}\n"
+                        f"Описание: {admin_description}\n"
+                        f"Возможно, потребуется перезапуск бота."
+                    )
             else:
                 await message.reply_text(
                     "❌ Не удалось добавить администратора. Возможно, он уже существует."
                 )
+                
+                logger.warning(f"Не удалось добавить администратора (admin_add_fail)", 
+                             details={"admin_id": new_admin_id})
 
             # Очищаем данные
             context.user_data.clear()
             return ConversationHandler.END
 
         except Exception as e:
-            logger.error(f"Ошибка при сохранении описания администратора: {e}")
+            logger.error("сохранение_описания_администратора", e, 
+                       details={"admin_id": context.user_data.get('new_admin_id')})
             await update.message.reply_text(
                 "❌ Произошла ошибка при сохранении описания администратора."
             )
@@ -836,7 +898,8 @@ class AdminHandler(BaseHandler):
 
     async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало процесса удаления администратора"""
-        logger.info(f"Пользователь {update.effective_user.id} начал удаление администратора")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Начало удаления администратора")
         
         # Получаем список админов
         admins = await self.sheets.get_admins_list()
@@ -865,6 +928,7 @@ class AdminHandler(BaseHandler):
 
     async def handle_admin_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка удаления администратора"""
+        user_id = update.effective_user.id
         choice = update.message.text
         
         if choice == "❌ Отмена":
@@ -872,10 +936,13 @@ class AdminHandler(BaseHandler):
                 "Удаление отменено.",
                 reply_markup=ReplyKeyboardRemove()
             )
+            logger.admin_action(user_id, "Отмена удаления администратора")
             return ConversationHandler.END
         
         try:
             admin_id = int(choice.split(" - ")[0])
+            logger.admin_action(user_id, "Удаление администратора", details={"admin_id": admin_id})
+            
             success = self.sheets.remove_admin(admin_id)
             
             if success:
@@ -888,13 +955,15 @@ class AdminHandler(BaseHandler):
                     f"✅ Администратор {admin_id} успешно удален.",
                     reply_markup=ReplyKeyboardRemove()
                 )
+                logger.admin_action(user_id, "Администратор успешно удален", details={"admin_id": admin_id})
             else:
                 await update.message.reply_text(
                     "❌ Не удалось удалить администратора.",
                     reply_markup=ReplyKeyboardRemove()
                 )
+                logger.warning(f"Не удалось удалить администратора (admin_remove_fail)", details={"admin_id": admin_id})
         except Exception as e:
-            logger.error(f"Ошибка при удалении администратора: {e}")
+            logger.error("удаление_администратора", e, details={"admin_id": choice})
             await update.message.reply_text(
                 "❌ Произошла ошибка при удалении администратора.",
                 reply_markup=ReplyKeyboardRemove()
@@ -904,90 +973,84 @@ class AdminHandler(BaseHandler):
 
     async def list_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показ списка администраторов"""
-        logger.info(f"Пользователь {update.effective_user.id} запросил список администраторов")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Запрос списка администраторов")
         
-        admins = await self.sheets.get_admins_list()
-        
-        if not admins:
+        try:
+            admins = await self.sheets.get_admins_list()
+            
+            if not admins:
+                await update.message.reply_text(
+                    "📝 Список администраторов пуст.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return
+            
+            # Формируем текст со списком админов
+            admins_text = "📝 Список администраторов:\n\n"
+            for admin_id, admin_info in admins:
+                admins_text += f"• {admin_id} - {admin_info}\n"
+            
             await update.message.reply_text(
-                "📝 Список администраторов пуст.",
+                admins_text,
                 reply_markup=ReplyKeyboardRemove()
             )
-            return
-        
-        # Формируем текст со списком админов
-        admins_text = "📝 Список администраторов:\n\n"
-        for admin_id, admin_info in admins:
-            admins_text += f"• {admin_id} - {admin_info}\n"
-        
-        await update.message.reply_text(
-            admins_text,
-            reply_markup=ReplyKeyboardRemove()
-        ) 
+        except Exception as e:
+            logger.error("ошибка_при_получении_списка_администраторов", str(e), 
+                        details={"запросил": user_id})
+            await update.message.reply_text(
+                "❌ Произошла ошибка при получении списка администраторов. Пожалуйста, попробуйте позже.",
+                reply_markup=ReplyKeyboardRemove()
+            )
 
     async def handle_add_free_text_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка добавления вопроса для свободного ответа"""
+        user_id = update.effective_user.id
         prompt = update.message.text
-        logger.info(f"Получен вопрос для свободного ответа: {prompt}")
+        logger.admin_action(user_id, "Ввод подсказки для свободного ответа", details={"текст": prompt})
         
-        # Проверяем наличие необходимых данных в контексте
-        if 'editing_question' not in context.user_data or 'editing_option' not in context.user_data:
-            logger.error("Ошибка: editing_question или editing_option отсутствуют в context.user_data")
-            logger.info(f"Доступные ключи в context.user_data: {context.user_data.keys()}")
-            
-            # Проверяем, есть ли альтернативные данные в контексте
-            question = context.user_data.get('current_question')
-            parent_option = context.user_data.get('parent_option')
-            
-            if not question or not parent_option:
-                await update.message.reply_text(
-                    "❌ Ошибка: вопрос или вариант не выбраны",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                return ConversationHandler.END
-                
-            # Используем альтернативные данные, если они есть
-            context.user_data['editing_question'] = question
-            context.user_data['editing_option'] = parent_option
-            logger.info(f"Использованы альтернативные данные: вопрос '{question}', вариант '{parent_option}'")
+        # Дополнительные логи для отладки
+        logger.data_processing("состояние", "Состояние данных пользователя", details={"keys": list(context.user_data.keys())})
+
+        # Получаем индекс вопроса из контекста
+        question_index = context.user_data.get('question_index')
+        option_index = context.user_data.get('option_index')
         
-        question = context.user_data['editing_question']
-        parent_option_text = context.user_data['editing_option']
-        parent_option_index = context.user_data.get('editing_option_index', -1)
+        logger.data_processing("связь", "Связь вопроса и варианта",
+                       details={"question_index": question_index, "option_index": option_index})
         
-        # Получаем номер вопроса
-        question_num = context.user_data.get('editing_question_num', -1)
-        if question_num == -1:
-            # Пробуем найти номер вопроса, если он не был сохранен
-            for i, q in enumerate(self.questions):
-                if q == question:
-                    question_num = i
-                    context.user_data['editing_question_num'] = i
-                    break
-                
-        logger.info(f"Добавление вопроса для свободного ответа. Вопрос: '{question}', вариант: '{parent_option_text}', индекс вопроса: {question_num}")
-        
-        # Вместо многократного обновления вопросов из таблицы, вызываем метод однократно
-        try:
-            # Прямой вызов специализированного метода с минимальным количеством запросов
-            logger.info(f"Вызываем edit_question_options_with_free_text с параметрами: question_index={question_num}, option_text='{parent_option_text}', free_text_prompt='{prompt}'")
-            success = self.sheets.edit_question_options_with_free_text(
-                question_index=question_num,
-                option_text=parent_option_text,
-                free_text_prompt=prompt
+        # Проверяем наличие необходимых данных
+        if question_index is None or option_index is None:
+            logger.warning(f"Отсутствуют необходимые индексы для обработки подсказки (недостаточно_данных)", 
+                         details={"question_index": question_index, "option_index": option_index})
+            await update.message.reply_text(
+                "❌ Не удалось добавить подсказку: отсутствуют данные о вопросе или варианте ответа.",
+                reply_markup=ReplyKeyboardRemove()
             )
-            
-            logger.info(f"Результат сохранения вопроса со свободным ответом: {success}")
-        except AttributeError:
-            # Если метод edit_question_options_with_free_text не существует
-            logger.warning(f"Метод edit_question_options_with_free_text не найден, используем обычный метод")
-            # Используем стандартный метод
-            success = self.sheets.edit_question_options(
-                question_index=question_num, 
-                options=self.questions_with_options[question],
-                free_text_prompt=prompt, 
-                parent_option_text=parent_option_text
-            )
+            return ConversationHandler.END
+        
+        # Загружаем текущие варианты ответов для данного вопроса
+        questions_with_options = self.sheets.get_questions_with_options()
+        questions = list(questions_with_options.keys())
+        question = questions[question_index]
+        current_options = questions_with_options[question]
+        
+        logger.data_processing("варианты", "Текущие варианты ответа",
+                       details={"вопрос": question, "варианты": current_options})
+        
+        # Проверяем что текущий вариант - это свободный ответ
+        option = current_options[option_index]
+        option["sub_options"] = []  # Устанавливаем пустой список подвариантов для обозначения свободного ответа
+        option["free_text_prompt"] = prompt  # Сохраняем текст подсказки
+        
+        logger.data_processing("свободный_ответ", "Установка свободного ответа",
+                       details={"вариант": option["text"], "подсказка": prompt})
+        
+        # Сохраняем изменения
+        logger.data_processing("изменения", "Сохранение изменений",
+                       details={"вопрос": question, "номер_варианта": option_index})
+        
+        success = self.sheets.edit_question_options(question_index=question_index, options=current_options)
         
         if success:
             # Обновляем локальные данные после успешного сохранения
@@ -1025,10 +1088,12 @@ class AdminHandler(BaseHandler):
                 context.user_data['current_question'] = context.user_data['editing_question']
                 
             # Переходим обратно к состоянию добавления вложенных вариантов
-            logger.info(f"Возврат состояния ADDING_NESTED_OPTIONS из handle_add_free_text_prompt после успешного добавления вопроса")
+            logger.admin_action(user_id, "Возврат к добавлению вложенных вариантов", 
+                              details={"после": "успешного добавления подсказки"})
             return ADDING_NESTED_OPTIONS
         else:
-            logger.error(f"Не удалось добавить вопрос для свободного ответа для варианта '{parent_option_text}'")
+            logger.error("добавление_подсказки", "Не удалось добавить подсказку для свободного ответа", 
+                        details={"вариант": option["text"], "user_id": user_id})
             await update.message.reply_text(
                 "❌ Не удалось добавить вопрос для свободного ответа. Повторите попытку позже.",
                 reply_markup=ReplyKeyboardRemove()
@@ -1040,20 +1105,24 @@ class AdminHandler(BaseHandler):
         return ConversationHandler.END
 
     async def _update_handlers_questions(self, update: Update):
-        """Обновление списков вопросов в других обработчиках"""
+        """Обновляет списки вопросов во всех обработчиках"""
         try:
             if not self.application:
-                logger.error("Application не найден")
+                logger.error("отсутствие_приложения", "Application не найден")
                 return
 
             # Обновляем собственные списки вопросов перед обновлением других обработчиков
             old_questions_count = len(self.questions)
             self.questions_with_options = self.sheets.get_questions_with_options()
             self.questions = list(self.questions_with_options.keys())
-            logger.info(f"Обновлены локальные списки вопросов в AdminHandler. Было: {old_questions_count}, стало: {len(self.questions)}")
+            logger.data_processing("обновление", "Обновление списков вопросов", 
+                              details={"обработчик": "AdminHandler", 
+                                       "старое_количество": old_questions_count, 
+                                       "новое_количество": len(self.questions)})
             
             # Упрощенное логирование для снижения нагрузки
-            logger.info(f"Обновление вопросов в обработчиках. Количество: {len(self.questions)}")
+            logger.data_processing("обновление", "Начало обновления вопросов в обработчиках", 
+                              details={"количество_вопросов": len(self.questions)})
             
             # Обновляем списки вопросов в других обработчиках
             for handler in self.application.handlers[0]:
@@ -1088,7 +1157,9 @@ class AdminHandler(BaseHandler):
                             handler.states.clear()
                             handler.states.update(new_states)
                             
-                            logger.info(f"Полностью обновлены состояния в SurveyHandler. Было вопросов: {old_count}, стало: {len(self.questions)}")
+                            logger.data_processing("обновление", "Обновление состояний SurveyHandler", 
+                                              details={"старое_количество": old_count, 
+                                                       "новое_количество": len(self.questions)})
                             break
                 
                 # Обновление для EditHandler
@@ -1101,7 +1172,9 @@ class AdminHandler(BaseHandler):
                             edit_handler.questions_with_options = self.questions_with_options.copy()
                             edit_handler.questions = self.questions.copy()
                             
-                            logger.info(f"Обновлены списки вопросов в EditHandler. Было: {old_count}, стало: {len(self.questions)}")
+                            logger.data_processing("обновление", "Обновление вопросов в EditHandler", 
+                                              details={"старое_количество": old_count, 
+                                                       "новое_количество": len(self.questions)})
                             break
                 
                 # Обновление для DeleteQuestionHandler
@@ -1114,7 +1187,9 @@ class AdminHandler(BaseHandler):
                             delete_handler.questions_with_options = self.questions_with_options.copy()
                             delete_handler.questions = self.questions.copy()
                             
-                            logger.info(f"Обновлены списки вопросов в DeleteQuestionHandler. Было: {old_count}, стало: {len(self.questions)}")
+                            logger.data_processing("обновление", "Обновление вопросов в DeleteQuestionHandler", 
+                                              details={"старое_количество": old_count, 
+                                                       "новое_количество": len(self.questions)})
                             break
                 
                 # Обновление для ListQuestionsHandler
@@ -1125,17 +1200,20 @@ class AdminHandler(BaseHandler):
                             old_count = len(list_questions_handler.questions)
                             list_questions_handler.questions_with_options = self.questions_with_options.copy()
                             list_questions_handler.questions = self.questions.copy()
-                            logger.info(f"Обновлены списки вопросов в ListQuestionsHandler. Было: {old_count}, стало: {len(self.questions)}")
+                            logger.data_processing("обновление", "Обновление вопросов в ListQuestionsHandler", 
+                                              details={"старое_количество": old_count, 
+                                                       "новое_количество": len(self.questions)})
 
-            logger.info(f"Списки вопросов успешно обновлены во всех обработчиках. Итоговое количество вопросов: {len(self.questions)}")
+            logger.data_processing("обновление", "Завершение обновления вопросов", 
+                              details={"итоговое_количество": len(self.questions)})
 
         except Exception as e:
-            logger.error(f"Ошибка при обновлении списков вопросов: {e}")
-            logger.exception(e)
+            logger.error("обновление_вопросов", str(e))
 
     async def reset_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Сброс прохождения опроса для пользователя"""
-        logger.info(f"Админ {update.effective_user.id} запросил сброс опроса для пользователя")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Запрос на сброс опроса пользователя")
         
         await update.message.reply_text(
             "Отправьте ID пользователя, для которого нужно сбросить прохождение опроса.\n\n"
@@ -1147,8 +1225,11 @@ class AdminHandler(BaseHandler):
 
     async def handle_reset_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сброса опроса для пользователя"""
+        admin_id = update.effective_user.id
         try:
             user_id = int(update.message.text)
+            logger.admin_action(admin_id, "Сброс опроса пользователя", details={"target_user_id": user_id})
+            
             success = self.sheets.reset_user_survey(user_id)
             
             if success:
@@ -1156,13 +1237,16 @@ class AdminHandler(BaseHandler):
                     f"✅ Прохождение опроса для пользователя {user_id} успешно сброшено",
                     reply_markup=ReplyKeyboardRemove()
                 )
+                logger.admin_action(admin_id, "Успешный сброс опроса", details={"target_user_id": user_id})
             else:
                 await update.message.reply_text(
                     "❌ Произошла ошибка при сбросе опроса",
                     reply_markup=ReplyKeyboardRemove()
                 )
+                logger.error("сброс_опроса", "Ошибка при сбросе опроса", details={"target_user_id": user_id})
                 
         except ValueError:
+            logger.warning(f"Некорректный ID пользователя (invalid_user_id)", details={"введенный_текст": update.message.text})
             await update.message.reply_text(
                 "❌ Пожалуйста, отправьте корректный ID пользователя (число)",
                 reply_markup=ReplyKeyboardRemove()
@@ -1173,7 +1257,11 @@ class AdminHandler(BaseHandler):
 
     async def list_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Вывод списка зарегистрированных пользователей с пагинацией"""
-        logger.info(f"Пользователь {update.effective_user.id} запросил список пользователей")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Просмотр списка пользователей")
+        
+        # Собираем список пользователей
+        logger.data_processing("пользователи", "Получение списка пользователей", details={"запросил": user_id})
         
         # Инициализируем страницу и сохраняем в context
         context.user_data['users_page'] = 1
@@ -1267,7 +1355,8 @@ class AdminHandler(BaseHandler):
 
     async def handle_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка списка пользователей"""
-        logger.info(f"Получение списка пользователей")
+        user_id = update.effective_user.id
+        logger.data_processing("пользователи", "Получение списка пользователей", details={"запросил": user_id})
         
         # Получаем список пользователей из таблицы
         users = self.sheets.get_users_list()

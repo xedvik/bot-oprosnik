@@ -2,29 +2,44 @@
 Модуль для работы с Google Sheets
 """
 
-import logging
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import os
 import time
 
-from config import (
-    GOOGLE_CREDENTIALS_FILE, SPREADSHEET_ID,
-    QUESTIONS_SHEET, ANSWERS_SHEET, STATS_SHEET,
-    ADMINS_SHEET, SHEET_NAMES, SHEET_HEADERS,
-    DEFAULT_MESSAGES, MESSAGE_TYPES
-)
+# Избегаем циклического импорта, перенесем константы из config непосредственно сюда
+# Для гибкости сохраним возможность переопределения этих значений при инициализации
+from utils.questions_cache import QuestionsCache
+from utils.logger import get_logger
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
+# Получаем логгер для модуля
+logger = get_logger()
 
 class GoogleSheets:
     """Класс для работы с Google Sheets"""
     
-    def __init__(self):
+    def __init__(self, 
+                 google_credentials_file=None, 
+                 spreadsheet_id=None,
+                 sheet_names=None,
+                 sheet_headers=None,
+                 default_messages=None,
+                 message_types=None):
         """Инициализация подключения к Google Sheets"""
-        logger.info("Инициализация подключения к Google Sheets")
+        # Инициализируем логгер для экземпляра класса
+        self.logger = logger
+        self.logger.init("GoogleSheets", "Инициализация подключения")
+        
+        # Загружаем переменные окружения, если они не предоставлены
+        if google_credentials_file is None:
+            google_credentials_file = os.getenv("GOOGLE_CREDENTIALS_FILE", "/app/credentials.json")
+        
+        if spreadsheet_id is None:
+            spreadsheet_id = os.getenv("SPREADSHEET_ID")
+            
+        # Загружаем конфигурацию названий листов, если она не предоставлена
+        self._load_sheet_config(sheet_names, sheet_headers, default_messages, message_types)
         
         # Область видимости, необходимая для работы с Google Sheets
         scope = [
@@ -35,26 +50,44 @@ class GoogleSheets:
         
         # Создаем клиент для работы с Google Sheets
         try:
-            creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
-            self.sheet = gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
-            logger.info("Подключение к Google Sheets успешно установлено")
+            creds = Credentials.from_service_account_file(google_credentials_file, scopes=scope)
+            self.sheet = gspread.authorize(creds).open_by_key(spreadsheet_id)
+            self.logger.init("GoogleSheets", "Подключение установлено")
             
-            # Инициализация кэша для вопросов и времени последнего обновления
-            self._questions_cache = None
-            self._questions_cache_time = 0
-            self._questions_cache_ttl = 30  # время жизни кэша в секундах
+            # Инициализируем кэш вопросов
+            self.questions_cache = QuestionsCache()
             
             # Инициализируем листы таблицы, если они не существуют
             self.initialize_sheets()
             
         except Exception as e:
-            logger.error(f"Ошибка при подключении к Google Sheets: {e}")
+            self.logger.error("подключение_к_sheets", e)
             raise e
+    
+    def _load_sheet_config(self, sheet_names=None, sheet_headers=None, default_messages=None, message_types=None):
+        """Загружает конфигурацию листов и другие настройки из переменных окружения"""
+        # Импортируем здесь, чтобы избежать циклической зависимости
+        from config import (
+            SHEET_NAMES, SHEET_HEADERS, DEFAULT_MESSAGES, MESSAGE_TYPES,
+            QUESTIONS_SHEET, ANSWERS_SHEET, STATS_SHEET, ADMINS_SHEET
+        )
+        
+        # Устанавливаем значения из config или из переданных параметров
+        self.SHEET_NAMES = sheet_names or SHEET_NAMES
+        self.SHEET_HEADERS = sheet_headers or SHEET_HEADERS
+        self.DEFAULT_MESSAGES = default_messages or DEFAULT_MESSAGES
+        self.MESSAGE_TYPES = message_types or MESSAGE_TYPES
+        
+        # Сохраняем основные названия листов для простого доступа
+        self.QUESTIONS_SHEET = QUESTIONS_SHEET
+        self.ANSWERS_SHEET = ANSWERS_SHEET
+        self.STATS_SHEET = STATS_SHEET
+        self.ADMINS_SHEET = ADMINS_SHEET
     
     def initialize_sheets(self):
         """Инициализация всех необходимых листов"""
         try:
-            logger.info("Инициализация листов таблицы")
+            self.logger.init("sheets", "Инициализация листов таблицы")
             
             # Инициализируем лист пользователей
             self.initialize_users_sheet()
@@ -68,21 +101,24 @@ class GoogleSheets:
             # Здесь можно добавить инициализацию других листов при необходимости
             
         except Exception as e:
-            logger.error(f"Ошибка при инициализации листов: {e}")
+            self.logger.error("инициализация_листов", e)
             raise
     
     def get_questions_with_options(self) -> dict:
         """Получение вопросов с вариантами ответов из таблицы с кэшированием"""
-        # Проверка наличия актуального кэша
-        current_time = time.time()
-        if (self._questions_cache is not None and 
-            current_time - self._questions_cache_time < self._questions_cache_ttl):
-            logger.info(f"Используем кэшированные вопросы ({len(self._questions_cache)} вопросов)")
-            return self._questions_cache.copy()
+        # Используем синглтон-кэш для получения вопросов
+        return self.questions_cache.get_questions(self._fetch_questions_from_sheet)
             
+    # Метод для принудительного обновления кэша
+    def invalidate_questions_cache(self):
+        """Сбрасывает кэш вопросов, чтобы при следующем вызове данные были загружены заново"""
+        self.questions_cache.invalidate_cache()
+        
+    def _fetch_questions_from_sheet(self) -> dict:
+        """Загружает вопросы с вариантами ответов из таблицы напрямую"""
         try:
-            logger.info("Получение вопросов с вариантами ответов")
-            questions_sheet = self.sheet.worksheet(QUESTIONS_SHEET)
+            self.logger.data_load("вопросы", f"Google Sheets/{self.QUESTIONS_SHEET}")
+            questions_sheet = self.sheet.worksheet(self.QUESTIONS_SHEET)
             
             # Получаем все данные из таблицы
             data = questions_sheet.get_all_values()
@@ -112,13 +148,17 @@ class GoogleSheets:
                         # Проверяем, является ли это свободным ответом или подсказкой
                         if sub_opts_str.strip() == "":
                             # Пустая строка после :: означает свободный ввод
-                            logger.info(f"Обнаружен вариант с пустым списком sub_options (свободный ответ): {main_opt}")
+                            self.logger.data_processing("options", "Обработка варианта ответа", 
+                                                      details={"тип": "свободный_ответ", "вариант": main_opt})
                             options.append({"text": main_opt, "sub_options": []})
                         # Проверяем формат с префиксом prompt=
                         elif sub_opts_str.strip().startswith("prompt="):
                             # Это специальный формат для сохранения подсказки для свободного ввода
                             free_text_prompt = sub_opts_str.strip()[7:]  # Убираем префикс "prompt="
-                            logger.info(f"Обнаружена подсказка для свободного ввода в формате prompt=: {main_opt} -> prompt={free_text_prompt}")
+                            self.logger.data_processing("options", "Обработка варианта ответа", 
+                                                      details={"тип": "свободный_ответ_с_подсказкой", 
+                                                              "вариант": main_opt, 
+                                                              "подсказка": free_text_prompt})
                             options.append({
                                 "text": main_opt,
                                 "sub_options": [], # Пустой список означает свободный ответ
@@ -127,7 +167,10 @@ class GoogleSheets:
                         # Проверяем другие форматы подсказок
                         elif ";" not in sub_opts_str and ("вопрос" in sub_opts_str.lower() or "введите" in sub_opts_str.lower()):
                             # Это подсказка для свободного ввода, а не список подвариантов
-                            logger.info(f"Обнаружена подсказка для свободного ввода: {main_opt} -> {sub_opts_str}")
+                            self.logger.data_processing("options", "Обработка варианта ответа", 
+                                                      details={"тип": "свободный_ответ_с_подсказкой", 
+                                                              "вариант": main_opt, 
+                                                              "подсказка": sub_opts_str.strip()})
                             options.append({
                                 "text": main_opt,
                                 "sub_options": [], # Пустой список означает свободный ответ
@@ -139,7 +182,10 @@ class GoogleSheets:
                             
                             if len(sub_options_list) == 1 and ("вопрос для" in sub_options_list[0].lower() or "введите" in sub_options_list[0].lower()):
                                 # Это подсказка для свободного ввода, преобразуем в соответствующий формат
-                                logger.info(f"Обнаружен вариант с подсказкой для свободного ввода: {main_opt} -> {sub_options_list[0]}")
+                                self.logger.data_processing("options", "Обработка варианта ответа", 
+                                                          details={"тип": "свободный_ответ_с_подсказкой", 
+                                                                  "вариант": main_opt, 
+                                                                  "подсказка": sub_options_list[0]})
                                 options.append({
                                     "text": main_opt, 
                                     "sub_options": [], 
@@ -154,40 +200,38 @@ class GoogleSheets:
                 
                 questions_with_options[question] = options
             
-            # Логируем структуру вариантов для проверки (уменьшаем количество логов)
+            # Логируем структуру вариантов для проверки только при отладке
+            options_structure = {}
             for question, opts in questions_with_options.items():
                 for opt in opts:
                     if "sub_options" in opt:
                         if isinstance(opt["sub_options"], list) and opt["sub_options"] == []:
                             if "free_text_prompt" in opt:
-                                logger.info(f"Загружен вариант с пустым списком sub_options и подсказкой для свободного ввода: {opt['text']} -> {opt['free_text_prompt']}")
+                                option_key = f"{question}:{opt['text']}"
+                                options_structure[option_key] = {"type": "free_text_with_prompt", "prompt": opt['free_text_prompt']}
                             else:
-                                logger.info(f"Загружен вариант с пустым списком sub_options (свободный ответ): {opt['text']}")
+                                option_key = f"{question}:{opt['text']}"
+                                options_structure[option_key] = {"type": "free_text"}
             
-            logger.info(f"Получено {len(questions_with_options)} вопросов")
+            if options_structure:
+                self.logger.data_processing("options", "Структура специальных опций", 
+                                          details={"options": str(options_structure)[:500]})
             
-            # Обновляем кэш и время последнего обновления
-            self._questions_cache = questions_with_options
-            self._questions_cache_time = current_time
+            questions_count = len(questions_with_options)
+            self.logger.data_load("вопросы", f"Google Sheets/{self.QUESTIONS_SHEET}", count=questions_count, 
+                                details={"options_count": sum(len(opts) for opts in questions_with_options.values())})
             
-            return questions_with_options.copy()
+            return questions_with_options
             
         except Exception as e:
-            logger.error(f"Ошибка при получении вопросов: {e}")
-            # Возвращаем кэш, если он есть, иначе пустой словарь
-            return self._questions_cache.copy() if self._questions_cache is not None else {}
-                    
-    # Метод для принудительного обновления кэша
-    def invalidate_questions_cache(self):
-        """Сбрасывает кэш вопросов, чтобы при следующем вызове данные были загружены заново"""
-        self._questions_cache = None
-        self._questions_cache_time = 0
-        logger.info("Кэш вопросов сброшен")
+            self.logger.error("получение_вопросов", e, details={"sheet": self.QUESTIONS_SHEET})
+            # Возвращаем пустой словарь в случае ошибки
+            return {}
     
     def save_answers(self, answers: list, user_id: int) -> bool:
         """Сохранение ответов пользователя в таблицу"""
         try:
-            logger.info(f"[{user_id}] Начало сохранения ответов: {answers}")
+            self.logger.user_action(user_id, "Сохранение ответов", f"Начало сохранения: {len(answers)} ответов")
             start_time = datetime.now()
             
             # Получаем список вопросов
@@ -195,48 +239,56 @@ class GoogleSheets:
             
             # Проверяем, что количество ответов соответствует количеству вопросов
             if len(answers) != len(questions):
-                logger.error(f"[{user_id}] Количество ответов ({len(answers)}) не соответствует количеству вопросов ({len(questions)})")
-                logger.error(f"[{user_id}] Ответы: {answers}")
-                logger.error(f"[{user_id}] Вопросы: {questions}")
+                self.logger.error("несоответствие_данных", 
+                                 f"Количество ответов не соответствует количеству вопросов", 
+                                 details={"user_id": user_id, 
+                                         "answers_count": len(answers), 
+                                         "questions_count": len(questions)})
+                self.logger.data_processing("answer_data", "Данные ответов пользователя", 
+                                         details={"user_id": user_id, "answers": str(answers)[:300]})
+                self.logger.data_processing("question_data", "Данные вопросов", 
+                                         details={"user_id": user_id, "questions": str(questions)[:300]})
                 return False
             
             # Получаем текущую дату и время
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             # Сохраняем ответы в таблицу ответов
-            answers_sheet = self.sheet.worksheet(ANSWERS_SHEET)
+            answers_sheet = self.sheet.worksheet(self.ANSWERS_SHEET)
             
             # Подготавливаем данные для добавления
             row_data = [current_time, str(user_id)] + answers
             
-            logger.info(f"[{user_id}] Отправка данных в таблицу...")
+            self.logger.data_processing(user_id, "Отправка данных в таблицу")
             # Добавляем ответы
             answers_sheet.append_row(row_data)
             
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
-            logger.info(f"[{user_id}] Ответы успешно сохранены за {duration:.2f} секунд")
+            self.logger.data_processing(user_id, "Ответы успешно сохранены", 
+                                       details={"duration": f"{duration:.2f}"})
             return True
             
         except Exception as e:
-            logger.error(f"[{user_id}] Ошибка при сохранении ответов: {e}")
+            self.logger.error("сохранение_ответов", e, details={"user_id": user_id})
             return False
     
     def update_statistics_sheet(self) -> bool:
         """Полное обновление листа статистики на основе всех ответов"""
         try:
-            logger.info("Обновление листа статистики")
+            self.logger.data_processing("system", "Обновление листа статистики")
             
             # Получаем вопросы с вариантами ответов
             questions_with_options = self.get_questions_with_options()
             
             # Получаем данные из листа ответов
-            answers_sheet = self.sheet.worksheet(ANSWERS_SHEET)
+            answers_sheet = self.sheet.worksheet(self.ANSWERS_SHEET)
             answers_data = answers_sheet.get_all_values()
             
             if len(answers_data) <= 1:  # Только заголовок или пусто
-                logger.info("Нет данных для обновления статистики")
-                stats_sheet = self.sheet.worksheet(STATS_SHEET)
+                self.logger.data_processing("system", "Нет данных для обновления статистики", 
+                                          details={"причина": "Таблица содержит только заголовки или пуста"})
+                stats_sheet = self.sheet.worksheet(self.STATS_SHEET)
                 stats_sheet.clear()
                 stats_sheet.append_row(["Статистика опроса"])
                 stats_sheet.append_row(["Всего пройдено опросов:", "0"])
@@ -275,7 +327,7 @@ class GoogleSheets:
                                 stats[question][answer] += 1
             
             # Обновляем лист статистики
-            stats_sheet = self.sheet.worksheet(STATS_SHEET)
+            stats_sheet = self.sheet.worksheet(self.STATS_SHEET)
             
             # Очищаем текущие данные
             stats_sheet.clear()
@@ -319,43 +371,46 @@ class GoogleSheets:
             total_surveys = len(answers_data) - 1  # -1 для заголовка
             stats_sheet.append_row(["Всего пройдено опросов:", str(total_surveys)])
             
-            logger.info("Лист статистики успешно обновлен")
+            self.logger.data_processing("system", "Лист статистики успешно обновлен")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при обновлении листа статистики: {e}")
+            self.logger.error("обновление_листа_статистики", e)
             return False
     
     def update_statistics(self):
         """Обновление статистики в отдельном листе"""
         try:
             # Проверяем наличие листа статистики
-            stats_sheet = self.spreadsheet.worksheet(STATS_SHEET)
+            stats_sheet = self.sheet.worksheet(self.STATS_SHEET)
             
             if not stats_sheet:
-                logger.warning("Лист статистики не найден, создание невозможно")
+                self.logger.warning("statistics_sheet_missing", "Лист статистики не найден", 
+                                  details={"причина": "Лист не существует", "действие": "Создание невозможно"})
                 return False
                 
             # Получаем все ответы
-            logger.info("Начало обновления статистики...")
+            self.logger.data_processing("system", "Начало обновления статистики...")
             
             # Получаем все ответы из листа ответов
-            answers_sheet = self.spreadsheet.worksheet(ANSWERS_SHEET)
+            answers_sheet = self.sheet.worksheet(self.ANSWERS_SHEET)
             all_responses = answers_sheet.get_all_values()
             
             if len(all_responses) <= 1:  # Только заголовки или пусто
-                logger.warning("Нет данных для статистики")
+                self.logger.warning("no_statistics_data", "Нет данных для обновления статистики", 
+                                  details={"причина": "Таблица содержит только заголовки или пуста"})
                 return False
                 
             # Пропускаем заголовок
             responses = all_responses[1:]
             
             # Получаем вопросы
-            questions_sheet = self.spreadsheet.worksheet(QUESTIONS_SHEET)
+            questions_sheet = self.sheet.worksheet(self.QUESTIONS_SHEET)
             questions_data = questions_sheet.get_all_values()
             
             if len(questions_data) <= 1:  # Только заголовки или пусто
-                logger.warning("Нет вопросов для статистики")
+                self.logger.warning("no_questions_for_statistics", "Нет вопросов для обработки статистики", 
+                                  details={"причина": "Таблица вопросов содержит только заголовки или пуста"})
                 return False
                 
             # Пропускаем заголовок
@@ -424,25 +479,26 @@ class GoogleSheets:
                     
                     row += 1
             
-            logger.info(f"Статистика успешно обновлена, обработано {len(responses)} ответов на {len(questions)} вопросов")
+            self.logger.data_processing("system", "Статистика успешно обновлена", 
+                                       details={"responses": len(responses), "questions": len(questions)})
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при обновлении статистики: {str(e)}")
+            self.logger.error("обновление_статистики", e)
             return False
 
     def update_stats_sheet_with_percentages(self):
         """Обновление листа статистики с процентами для всех вариантов ответов"""
         try:
-            logger.info("Обновление листа статистики с процентами")
+            self.logger.data_processing("system", "Обновление листа статистики с процентами")
             
             # Получаем данные для статистики
-            answers_sheet = self.sheet.worksheet(ANSWERS_SHEET)
+            answers_sheet = self.sheet.worksheet(self.ANSWERS_SHEET)
             answers_data = answers_sheet.get_all_values()
             
             # Пропускаем заголовок
             if len(answers_data) <= 1:
-                logger.info("Нет данных для статистики")
+                self.logger.data_processing("system", "Нет данных для статистики")
                 return True
             
             # Получаем вопросы с вариантами ответов
@@ -474,7 +530,7 @@ class GoogleSheets:
                         question_totals[question] += 1
             
             # Обновляем лист статистики
-            stats_sheet = self.sheet.worksheet(STATS_SHEET)
+            stats_sheet = self.sheet.worksheet(self.STATS_SHEET)
             
             # Очищаем текущие данные
             stats_sheet.clear()
@@ -500,20 +556,20 @@ class GoogleSheets:
             total_surveys = len(answers_data) - 1
             stats_sheet.append_row(["Всего пройдено опросов:", str(total_surveys)])
             
-            logger.info("Лист статистики успешно обновлен с процентами")
+            self.logger.data_processing("system", "Лист статистики успешно обновлен с процентами")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при обновлении листа статистики с процентами: {e}")
+            self.logger.error("обновление_статистики_с_процентами", e)
             return False
     
     def get_statistics_from_sheet(self) -> str:
         """Получение статистики из листа статистики"""
         try:
-            logger.info("Получение статистики из листа")
+            self.logger.data_processing("system", "Получение статистики из листа")
             
             # Получаем данные из листа статистики
-            stats_sheet = self.sheet.worksheet(STATS_SHEET)
+            stats_sheet = self.sheet.worksheet(self.STATS_SHEET)
             stats_data = stats_sheet.get_all_values()
             
             if len(stats_data) <= 1:  # Только заголовок или пусто
@@ -545,21 +601,22 @@ class GoogleSheets:
             return stats_text
             
         except Exception as e:
-            logger.error(f"Ошибка при получении статистики: {e}")
+            self.logger.error("получение_статистики", e)
             return "❌ Ошибка при получении статистики"
     
     def get_admins(self) -> list:
         """Получение списка ID админов из таблицы"""
         try:
-            logger.info("Получение списка админов из таблицы")
+            self.logger.data_processing("system", "Получение списка админов из таблицы")
             
             # Проверяем существование листа с админами
             try:
-                admins_sheet = self.sheet.worksheet(ADMINS_SHEET)
+                admins_sheet = self.sheet.worksheet(self.ADMINS_SHEET)
             except gspread.exceptions.WorksheetNotFound:
-                logger.warning(f"Лист '{ADMINS_SHEET}' не найден. Создаем новый.")
+                self.logger.warning("admins_sheet_not_found", "Лист администраторов не найден", 
+                                  details={"лист": self.ADMINS_SHEET, "действие": "Создание нового листа"})
                 # Создаем лист с админами, если его нет
-                admins_sheet = self.sheet.add_worksheet(title=ADMINS_SHEET, rows=100, cols=2)
+                admins_sheet = self.sheet.add_worksheet(title=self.ADMINS_SHEET, rows=100, cols=2)
                 # Добавляем заголовок
                 admins_sheet.update('A1:B1', [['ID', 'Имя']])
             
@@ -578,7 +635,8 @@ class GoogleSheets:
                         admin_id = int(row[0])
                         admin_ids.append(admin_id)
                     except ValueError:
-                        logger.warning(f"Некорректный ID админа: {row[0]}")
+                        self.logger.warning("invalid_admin_id", "Некорректный формат ID администратора", 
+                                         details={"значение": row[0], "ожидаемый_тип": "целое число"})
             
             # Добавляем админов из переменной окружения
             env_admins = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
@@ -586,23 +644,25 @@ class GoogleSheets:
                 if admin_id not in admin_ids:
                     admin_ids.append(admin_id)
             
-            logger.info(f"Получено {len(admin_ids)} админов: {admin_ids}")
+            self.logger.data_processing("system", f"Получено {len(admin_ids)} админов", 
+                                       details={"admins": admin_ids})
             return admin_ids
             
         except Exception as e:
-            logger.error(f"Ошибка при получении списка админов: {e}")
+            self.logger.error("получение_списка_админов", e)
             # Возвращаем админов из переменной окружения в случае ошибки
             env_admins = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
-            logger.info(f"Используем админов из переменной окружения: {env_admins}")
+            self.logger.data_processing("system", "Используем админов из переменной окружения", 
+                                       details={"admins": env_admins})
             return env_admins
     
     def get_admins_info(self) -> list:
         """Получает полную информацию об администраторах (ID, имя, описание)"""
         try:
-            logger.info("Получение информации об администраторах")
+            self.logger.data_processing("system", "Получение информации об администраторах")
             
             # Получаем данные из листа администраторов
-            admins_sheet = self.sheet.worksheet(ADMINS_SHEET)
+            admins_sheet = self.sheet.worksheet(self.ADMINS_SHEET)
             data = admins_sheet.get_all_values()
             
             # Если есть данные, пропускаем заголовки
@@ -617,23 +677,24 @@ class GoogleSheets:
                 if len(row) >= 3 and row[0]:  # ID, имя, описание
                     admins_info.append(row)
             
-            logger.info(f"Получена информация о {len(admins_info)} администраторах")
+            self.logger.data_processing("system", "Получена информация об администраторах", 
+                                      details={"count": len(admins_info)})
             return admins_info
             
         except Exception as e:
-            logger.error(f"Ошибка при получении информации об администраторах: {e}")
+            self.logger.error("получение_информации_о_администраторах", e)
             return []
 
     def get_statistics(self) -> list:
         """Получение статистики ответов для вопросов с вариантами"""
         try:
-            logger.info("Получение статистики ответов")
+            self.logger.data_processing("system", "Получение статистики ответов")
             
             # Получаем вопросы с вариантами ответов
             questions_with_options = self.get_questions_with_options()
             
             # Получаем все ответы
-            answers_sheet = self.sheet.worksheet(ANSWERS_SHEET)
+            answers_sheet = self.sheet.worksheet(self.ANSWERS_SHEET)
             all_values = answers_sheet.get_all_values()
             
             if len(all_values) < 2:  # Если есть только заголовки или лист пустой
@@ -672,32 +733,33 @@ class GoogleSheets:
                     percentage = round((count / total_answers * 100) if total_answers > 0 else 0)
                     statistics.append([question, option, f"{count} ({percentage}%)"])
             
-            logger.info(f"Получено {len(statistics)} строк статистики")
+            self.logger.data_processing("system", f"Получено {len(statistics)} строк статистики")
             return statistics
             
         except Exception as e:
-            logger.error(f"Ошибка при получении статистики: {e}")
-            logger.exception(e)
+            self.logger.error("получение_статистики_ответов", e)
             return []
 
     def get_sheet_values(self, sheet_name):
         """Получение всех значений с указанного листа"""
         try:
-            logger.info(f"Получение данных с листа {sheet_name}")
+            self.logger.data_load("sheet_values", f"Получение данных с листа {sheet_name}")
             
             # Проверяем, может быть нам нужно использовать имя листа из SHEET_NAMES
-            if sheet_name in SHEET_NAMES:
-                actual_sheet_name = SHEET_NAMES[sheet_name]
-                logger.info(f"Используем имя листа из SHEET_NAMES: {sheet_name} -> {actual_sheet_name}")
+            if sheet_name in self.SHEET_NAMES:
+                actual_sheet_name = self.SHEET_NAMES[sheet_name]
+                self.logger.data_processing("sheets", "Преобразование имени листа", 
+                                          details={"original": sheet_name, "actual": actual_sheet_name})
             else:
                 actual_sheet_name = sheet_name
                 
             worksheet = self.sheet.worksheet(actual_sheet_name)
             values = worksheet.get_all_values()
-            logger.info(f"Получено {len(values)} строк с листа {sheet_name}")
+            self.logger.data_load("sheet_values", f"Получено данных с листа {sheet_name}", 
+                                count=len(values))
             return values
         except Exception as e:
-            logger.error(f"Ошибка при получении данных с листа {sheet_name}: {e}")
+            self.logger.error("получение_данных_листа", e, details={"sheet_name": sheet_name})
             return None
 
     def get_next_user_id(self) -> int:
@@ -708,46 +770,46 @@ class GoogleSheets:
                 return 1
             return max(int(row[0]) for row in values[1:]) + 1
         except Exception as e:
-            logger.error(f"Ошибка при получении следующего ID пользователя: {e}")
+            self.logger.error("получение_id_пользователя", e)
             return 1
 
     def initialize_users_sheet(self) -> bool:
         """Инициализация листа пользователей"""
         try:
-            logger.info("Инициализация листа пользователей")
+            self.logger.init("sheets", "Инициализация листа пользователей")
             
             # Проверяем существование листа
             try:
-                users_sheet = self.sheet.worksheet(SHEET_NAMES['users'])
+                users_sheet = self.sheet.worksheet(self.SHEET_NAMES['users'])
             except gspread.exceptions.WorksheetNotFound:
-                logger.info("Создаем новый лист пользователей")
+                self.logger.init("sheets", "Создание нового листа пользователей")
                 users_sheet = self.sheet.add_worksheet(
-                    title=SHEET_NAMES['users'],
+                    title=self.SHEET_NAMES['users'],
                     rows=1000,
-                    cols=len(SHEET_HEADERS['users'])
+                    cols=len(self.SHEET_HEADERS['users'])
                 )
                 # Добавляем заголовки
-                users_sheet.update('A1:D1', [SHEET_HEADERS['users']])
-                logger.info("Заголовки листа пользователей установлены")
+                users_sheet.update('A1:D1', [self.SHEET_HEADERS['users']])
+                self.logger.init("sheets", "Заголовки листа пользователей установлены")
                 return True
             
             # Проверяем и обновляем заголовки
             current_headers = users_sheet.row_values(1)
-            if not current_headers or current_headers != SHEET_HEADERS['users']:
-                logger.info("Обновляем заголовки листа пользователей")
-                users_sheet.update('A1:D1', [SHEET_HEADERS['users']])
-                logger.info("Заголовки листа пользователей обновлены")
+            if not current_headers or current_headers != self.SHEET_HEADERS['users']:
+                self.logger.init("sheets", "Обновление заголовков листа пользователей")
+                users_sheet.update('A1:D1', [self.SHEET_HEADERS['users']])
+                self.logger.init("sheets", "Заголовки листа пользователей обновлены")
             
             return True
         except Exception as e:
-            logger.error(f"Ошибка при инициализации листа пользователей: {e}")
+            self.logger.error("инициализация_листа_пользователей", e)
             return False
 
     def add_user(self, telegram_id: int, username: str) -> bool:
         """Добавление нового пользователя"""
         try:
             # Получаем лист пользователей
-            users_sheet = self.sheet.worksheet(SHEET_NAMES['users'])
+            users_sheet = self.sheet.worksheet(self.SHEET_NAMES['users'])
             
             # Получаем следующий ID
             user_id = self.get_next_user_id()
@@ -761,10 +823,11 @@ class GoogleSheets:
                 current_time
             ])
             
-            logger.info(f"Добавлен новый пользователь: ID={user_id}, Telegram ID={telegram_id}")
+            self.logger.admin_action("system", "Добавление пользователя", 
+                                    details={"user_id": user_id, "telegram_id": telegram_id, "username": username})
             return True
         except Exception as e:
-            logger.error(f"Ошибка при добавлении пользователя: {e}")
+            self.logger.error("добавление_пользователя", e, details={"telegram_id": telegram_id})
             return False
 
     def is_user_exists(self, telegram_id: int) -> bool:
@@ -775,7 +838,7 @@ class GoogleSheets:
                 return False
             return any(str(telegram_id) == row[1] for row in values[1:])
         except Exception as e:
-            logger.error(f"Ошибка при проверке существования пользователя: {e}")
+            self.logger.error("проверка_существования_пользователя", e, details={"telegram_id": telegram_id})
             return False
 
     def get_users_list(self, page: int = 1, page_size: int = 10) -> tuple:
@@ -823,23 +886,24 @@ class GoogleSheets:
             return users, total_users, total_pages
             
         except Exception as e:
-            logger.error(f"Ошибка при получении списка пользователей: {e}")
+            self.logger.error("получение_списка_пользователей", e, 
+                             details={"page": page, "page_size": page_size})
             return [], 0, 0
 
     def initialize_messages_sheet(self) -> bool:
         """Инициализация листа сообщений"""
         try:
-            logger.info("Инициализация листа сообщений")
+            self.logger.init("sheets", "Инициализация листа сообщений")
             
             # Проверяем существование листа
             try:
-                messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
+                messages_sheet = self.sheet.worksheet(self.SHEET_NAMES['messages'])
                 
                 # Проверяем и обновляем структуру при необходимости
                 headers = messages_sheet.row_values(1)
-                if len(headers) < len(SHEET_HEADERS['messages']):
-                    logger.info("Обновляем структуру таблицы сообщений")
-                    messages_sheet.update('A1:D1', [SHEET_HEADERS['messages']])
+                if len(headers) < len(self.SHEET_HEADERS['messages']):
+                    self.logger.init("sheets", "Обновление структуры таблицы сообщений")
+                    messages_sheet.update('A1:D1', [self.SHEET_HEADERS['messages']])
                     
                     # Обновляем существующие данные, добавляя пустое значение для изображения
                     rows = messages_sheet.get_all_values()[1:]  # Пропускаем заголовок
@@ -853,33 +917,33 @@ class GoogleSheets:
                             messages_sheet.update(f'A{i}:D{i}', [[message_type, message_text, "", date]])
                 
             except gspread.exceptions.WorksheetNotFound:
-                logger.info("Создаем новый лист сообщений")
+                self.logger.init("sheets", "Создание нового листа сообщений")
                 messages_sheet = self.sheet.add_worksheet(
-                    title=SHEET_NAMES['messages'],
+                    title=self.SHEET_NAMES['messages'],
                     rows=100,
-                    cols=len(SHEET_HEADERS['messages'])
+                    cols=len(self.SHEET_HEADERS['messages'])
                 )
                 # Добавляем заголовки
-                messages_sheet.update('A1:D1', [SHEET_HEADERS['messages']])
+                messages_sheet.update('A1:D1', [self.SHEET_HEADERS['messages']])
                 
                 # Добавляем сообщения по умолчанию
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 default_rows = [
-                    ['start', DEFAULT_MESSAGES['start'], "", current_time],
-                    ['finish', DEFAULT_MESSAGES['finish'], "", current_time]
+                    ['start', self.DEFAULT_MESSAGES['start'], "", current_time],
+                    ['finish', self.DEFAULT_MESSAGES['finish'], "", current_time]
                 ]
                 messages_sheet.update('A2:D3', default_rows)
-                logger.info("Добавлены сообщения по умолчанию")
+                self.logger.init("sheets", "Добавлены сообщения по умолчанию")
             
             return True
         except Exception as e:
-            logger.error(f"Ошибка при инициализации листа сообщений: {e}")
+            self.logger.error("инициализация_листа_сообщений", e)
             return False
 
     def get_message(self, message_type: str) -> dict:
         """Получение текста и изображения сообщения по его типу"""
         try:
-            messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
+            messages_sheet = self.sheet.worksheet(self.SHEET_NAMES['messages'])
             all_messages = messages_sheet.get_all_values()
             
             # Пропускаем заголовок
@@ -895,25 +959,25 @@ class GoogleSheets:
             
             # Если сообщение не найдено, возвращаем значение по умолчанию
             return {
-                "text": DEFAULT_MESSAGES.get(message_type, ''),
+                "text": self.DEFAULT_MESSAGES.get(message_type, ''),
                 "image": ""
             }
             
         except Exception as e:
-            logger.error(f"Ошибка при получении сообщения типа {message_type}: {e}")
+            self.logger.error("получение_сообщения", e, details={"message_type": message_type})
             return {
-                "text": DEFAULT_MESSAGES.get(message_type, ''),
+                "text": self.DEFAULT_MESSAGES.get(message_type, ''),
                 "image": ""
             }
 
     def update_message(self, message_type: str, new_text: str, image_url: str = None) -> bool:
         """Обновление текста и изображения сообщения"""
         try:
-            if message_type not in MESSAGE_TYPES:
-                logger.error(f"Неизвестный тип сообщения: {message_type}")
+            if message_type not in self.MESSAGE_TYPES:
+                self.logger.error("неизвестный_тип_сообщения", f"Неизвестный тип сообщения", details={"message_type": message_type})
                 return False
                 
-            messages_sheet = self.sheet.worksheet(SHEET_NAMES['messages'])
+            messages_sheet = self.sheet.worksheet(self.SHEET_NAMES['messages'])
             all_messages = messages_sheet.get_all_values()
             
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -944,29 +1008,29 @@ class GoogleSheets:
                     current_time
                 ])
             
-            logger.info(f"Сообщение типа {message_type} успешно обновлено")
+            self.logger.admin_action("system", "Сообщение успешно обновлено", details={"message_type": message_type})
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при обновлении сообщения типа {message_type}: {e}")
+            self.logger.error("обновление_сообщения", e, details={"message_type": message_type})
             return False
 
     def initialize_posts_sheet(self) -> bool:
         """Инициализация листа постов"""
         try:
-            logger.info("Инициализация листа постов")
+            self.logger.init("sheets", "Инициализация листа постов")
             
             # Проверяем, существует ли уже лист с постами
             try:
-                posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
-                logger.info("Лист постов уже существует")
+                posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
+                self.logger.init("sheets", "Лист постов уже существует")
                 
                 # Проверяем и обновляем заголовки для существующего листа
                 current_headers = posts_sheet.row_values(1)
-                if current_headers and len(current_headers) < len(SHEET_HEADERS['posts']):
-                    logger.info("Обновляем структуру таблицы постов")
-                    posts_sheet.update('A1:H1', [SHEET_HEADERS['posts']])
-                    logger.info("Структура таблицы постов обновлена")
+                if current_headers and len(current_headers) < len(self.SHEET_HEADERS['posts']):
+                    self.logger.init("sheets", "Обновление структуры таблицы постов")
+                    posts_sheet.update('A1:H1', [self.SHEET_HEADERS['posts']])
+                    self.logger.init("sheets", "Структура таблицы постов обновлена")
                     
                     # Мигрируем существующие данные
                     self.migrate_posts_data()
@@ -974,34 +1038,34 @@ class GoogleSheets:
             except gspread.exceptions.WorksheetNotFound:
                 # Создаем новый лист для постов
                 posts_sheet = self.sheet.add_worksheet(
-                    title=SHEET_NAMES['posts'],
+                    title=self.SHEET_NAMES['posts'],
                     rows=1000,
                     cols=10
                 )
-                logger.info("Создан новый лист для постов")
+                self.logger.init("sheets", "Создан новый лист для постов")
                 
                 # Добавляем заголовки
-                posts_sheet.append_row(SHEET_HEADERS['posts'])
-                logger.info("Добавлены заголовки в лист постов")
+                posts_sheet.append_row(self.SHEET_HEADERS['posts'])
+                self.logger.init("sheets", "Добавлены заголовки в лист постов")
             
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при инициализации листа постов: {e}")
+            self.logger.error("инициализация_листа_постов", e)
             return False
 
     def migrate_posts_data(self):
         """Миграция данных в таблице постов для добавления столбца 'Название'"""
         try:
-            logger.info("Начинаем миграцию данных постов")
+            self.logger.data_processing("Начало миграции данных постов")
             
             # Получаем лист с постами
-            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
             
             # Получаем все данные (пропускаем заголовок)
             data = posts_sheet.get_all_values()
             if len(data) <= 1:  # Только заголовок или пусто
-                logger.info("Нет данных для миграции")
+                self.logger.data_processing("Миграция данных постов не требуется", details={"reason": "Нет данных для миграции"})
                 return True
             
             # Пропускаем заголовок
@@ -1033,20 +1097,20 @@ class GoogleSheets:
                     cell_range = f"C{i}:H{i}" if len(remaining_data) >= 6 else f"C{i}:{chr(66+len(remaining_data)+1)}{i}"
                     posts_sheet.update(cell_range, [remaining_data])
             
-            logger.info("Миграция данных постов завершена успешно")
+            self.logger.init("sheets", "Миграция данных постов завершена успешно")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при миграции данных постов: {e}")
+            self.logger.error("миграция_данных_постов", e)
             return False
     
     def save_post(self, title: str, text: str, image_url: str, button_text: str, button_url: str, admin_id: int) -> int:
         """Сохранение поста в таблицу"""
         try:
-            logger.info(f"Сохранение поста от администратора {admin_id}")
+            self.logger.admin_action(admin_id, "Сохранение поста", f"Заголовок: {title[:30]}...")
             
             # Открываем лист с постами
-            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
             
             # Получаем текущую дату и время
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1060,18 +1124,18 @@ class GoogleSheets:
             # Добавляем пост
             posts_sheet.append_row(row_data)
             
-            logger.info(f"Пост с ID {post_id} успешно сохранен")
+            self.logger.admin_action("system", "Пост успешно сохранен", details={"post_id": post_id, "admin_id": admin_id})
             return post_id
             
         except Exception as e:
-            logger.error(f"Ошибка при сохранении поста: {e}")
+            self.logger.error("сохранение_поста", e)
             return 0
     
     def get_all_posts(self) -> list:
         """Получение всех постов из таблицы"""
         try:
-            logger.info("Получение всех постов")
-            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            self.logger.data_processing("system", "Получение всех постов")
+            posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
             
             # Получаем все данные из таблицы
             data = posts_sheet.get_all_values()
@@ -1119,23 +1183,24 @@ class GoogleSheets:
                     }
                 posts.append(post)
             
-            logger.info(f"Получено {len(posts)} постов")
+            self.logger.data_processing("system", f"Получено {len(posts)} постов")
             return posts
             
         except Exception as e:
-            logger.error(f"Ошибка при получении постов: {e}")
+            self.logger.error("получение_постов", e)
             return []
     
     def get_post_by_id(self, post_id: str) -> dict:
         """Получение поста по ID"""
         try:
-            logger.info(f"Получение поста с ID {post_id}")
-            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            self.logger.data_processing("system", f"Получение поста с ID {post_id}")
+            posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
             
             # Находим пост по ID
             cell = posts_sheet.find(post_id)
             if not cell:
-                logger.error(f"Пост с ID {post_id} не найден")
+                self.logger.warning("post_not_found", "Пост не найден в таблице", 
+                                  details={"post_id": post_id, "действие": "Пропуск операции"})
                 return {}
             
             # Получаем всю строку
@@ -1177,21 +1242,23 @@ class GoogleSheets:
                     'admin_id': row_data[4] if len(row_data) > 4 else ''
                 }
             
-            logger.info(f"Пост с ID {post_id} успешно получен")
+            self.logger.data_processing("system", f"Пост с ID {post_id} успешно получен")
             return post
             
         except Exception as e:
-            logger.error(f"Ошибка при получении поста по ID: {e}")
+            self.logger.error("получение_поста", e, details={"post_id": post_id})
             return {}
     
     def update_post(self, post_id, text=None, image_url=None, button_text=None, button_url=None):
         """Обновляет существующий пост по ID"""
-        logger.info(f"Обновление поста с ID {post_id}")
-        logger.info(f"Параметры обновления: text={text}, image_url={image_url}, button_text={button_text}, button_url={button_url}")
+        self.logger.admin_action("system", f"Обновление поста", 
+                               details={"post_id": post_id, "text": text and text[:30]+"...", 
+                                        "image_url": image_url, "button_text": button_text, 
+                                        "button_url": button_url})
         
         try:
             # Получаем все посты
-            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
             rows = posts_sheet.get_all_values()
             
             # Ищем пост по ID
@@ -1199,46 +1266,50 @@ class GoogleSheets:
             for idx, row in enumerate(rows[1:], 2):  # Начинаем с 2, так как первая строка - заголовки
                 if len(row) >= 1 and row[0] == str(post_id):
                     row_index = idx
-                    logger.info(f"Найден пост с ID {post_id} в строке {row_index}")
+                    self.logger.data_processing("posts", "Найден пост в таблице", 
+                                             details={"post_id": post_id, "строка": row_index})
                     break
             
             if row_index is None:
-                logger.warning(f"Пост с ID {post_id} не найден для обновления")
+                self.logger.warning("post_not_found", "Пост не найден для обновления", 
+                                  details={"post_id": post_id, "действие": "Пропуск обновления"})
                 return False
             
             # Обновляем только те поля, которые переданы
             if text is not None:
-                logger.info(f"Обновление текста поста {post_id}: {text[:30]}...")
+                self.logger.data_processing("posts", "Обновление поля поста", 
+                                         details={"post_id": post_id, "поле": "текст", "предпросмотр": text[:30]+"..." if len(text) > 30 else text})
                 posts_sheet.update_cell(row_index, 2, text)
             
             if image_url is not None:
-                logger.info(f"Обновление изображения поста {post_id}")
+                self.logger.data_processing("posts", "Обновление поля поста", 
+                                         details={"post_id": post_id, "поле": "изображение", "url": image_url})
                 posts_sheet.update_cell(row_index, 3, image_url)
             
             if button_text is not None:
-                logger.info(f"Обновление текста кнопки поста {post_id}: {button_text}")
+                self.logger.data_processing("posts", "Обновление поля поста", 
+                                         details={"post_id": post_id, "поле": "текст кнопки", "значение": button_text})
                 posts_sheet.update_cell(row_index, 4, button_text)
             
             if button_url is not None:
-                logger.info(f"Обновление URL кнопки поста {post_id}: {button_url}")
+                self.logger.data_processing("posts", "Обновление поля поста", 
+                                         details={"post_id": post_id, "поле": "url кнопки", "значение": button_url})
                 posts_sheet.update_cell(row_index, 5, button_url)
             
-            logger.info(f"Пост с ID {post_id} успешно обновлен")
+            self.logger.admin_action("system", "Пост успешно обновлен", details={"post_id": post_id})
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при обновлении поста {post_id}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            self.logger.error("обновление_поста", e, details={"post_id": post_id})
             return False
     
     def delete_post(self, post_id):
         """Удаляет пост по его ID"""
-        logger.info(f"Удаление поста с ID {post_id}")
+        self.logger.admin_action("system", "Удаление поста", details={"post_id": post_id})
         
         try:
             # Получаем все посты
-            posts_sheet = self.sheet.worksheet(SHEET_NAMES['posts'])
+            posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
             rows = posts_sheet.get_all_values()
             
             # Ищем пост по ID
@@ -1249,15 +1320,20 @@ class GoogleSheets:
                     break
             
             if row_index is None:
-                logger.warning(f"Пост с ID {post_id} не найден для удаления")
+                self.logger.warning("post_not_found", "Пост не найден для удаления", 
+                                  details={"post_id": post_id, "действие": "Пропуск удаления"})
                 return False
             
             # Удаляем строку
             posts_sheet.delete_rows(row_index)
             
-            logger.info(f"Пост с ID {post_id} успешно удален")
+            self.logger.admin_action("system", "Пост успешно удален", details={"post_id": post_id})
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при удалении поста: {e}")
-            return False 
+            self.logger.error("удаление_поста", e)
+            return False
+
+# Импортируем и добавляем методы из sheets_questions к классу GoogleSheets
+# Размещаем импорт в конце файла чтобы избежать циклических зависимостей
+from utils.sheets_questions import * 

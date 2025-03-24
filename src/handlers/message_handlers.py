@@ -2,16 +2,16 @@
 Обработчики для редактирования системных сообщений
 """
 
-import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 
 from handlers.base_handler import BaseHandler
 from config import MESSAGE_TYPES
 from models.states import CHOOSING_MESSAGE_TYPE, ENTERING_NEW_MESSAGE, ASKING_ADD_IMAGE, UPLOADING_MESSAGE_IMAGE
+from utils.logger import get_logger
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
+# Получаем логгер для модуля
+logger = get_logger()
 
 class MessageHandler(BaseHandler):
     """Обработчики для редактирования системных сообщений"""
@@ -92,7 +92,7 @@ class MessageHandler(BaseHandler):
                     caption="Текущее изображение для сообщения"
                 )
             except Exception as e:
-                logger.error(f"Ошибка при отображении текущего изображения: {e}")
+                logger.error("отображение_изображения", e, details={"message_type": message_key})
                 await update.message.reply_text(
                     "⚠️ Не удалось отобразить текущее изображение. URL изображения может быть неверным."
                 )
@@ -122,7 +122,8 @@ class MessageHandler(BaseHandler):
         
         message_type = context.user_data.get('editing_message_type')
         if not message_type:
-            logger.error("Тип сообщения не найден в user_data")
+            logger.error("тип_сообщения_отсутствует", "Тип сообщения не найден в данных пользователя", 
+                       details={"user_id": update.effective_user.id})
             await update.message.reply_text(
                 "❌ Произошла ошибка. Попробуйте начать редактирование заново.",
                 reply_markup=ReplyKeyboardRemove()

@@ -2,18 +2,19 @@
 Обработчики для проведения опроса
 """
 
-import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 import asyncio
 from datetime import datetime
+import time
 
 from models.states import *
 from handlers.base_handler import BaseHandler
 from config import QUESTIONS_SHEET  # Добавляем импорт для доступа к имени листа вопросов
+from utils.logger import get_logger
 
 # Настройка логирования
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 class SurveyHandler(BaseHandler):
     """Обработчики для проведения опроса"""
@@ -21,7 +22,7 @@ class SurveyHandler(BaseHandler):
     async def begin_survey(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало опроса"""
         user_id = update.effective_user.id
-        logger.info(f"Пользователь {user_id} пытается зарегистрироваться")
+        logger.user_action(user_id, "Начало опроса", "Попытка регистрации")
         
         # Проверяем, проходил ли пользователь опрос
         if self.sheets.has_user_completed_survey(user_id):
@@ -41,6 +42,8 @@ class SurveyHandler(BaseHandler):
         
         # Инициализируем список ответов
         context.user_data['answers'] = []
+        logger.warning(f"Принудительная инициализация списка ответов (answers_init)", 
+                    details={"user_id": user_id, "причина": "отсутствовал ключ 'answers'"})
         
         # Отправляем первый вопрос
         return await self.send_question(update, context)
@@ -52,13 +55,14 @@ class SurveyHandler(BaseHandler):
         # Проверяем наличие ключа 'answers'
         if 'answers' not in context.user_data:
             context.user_data['answers'] = []
-            logger.info(f"[{user_id}] Инициализирован пустой список ответов")
+            logger.warning(f"Принудительная инициализация списка ответов (answers_init)", 
+                        details={"user_id": user_id, "причина": "отсутствовал ключ 'answers'"})
         
         current_question_num = len(context.user_data['answers'])
         
         # Показываем результаты, если ответили на все вопросы
         if current_question_num >= len(self.questions):
-            logger.info(f"[{user_id}] Все вопросы пройдены, показываем результаты")
+            logger.user_action(user_id, "Завершение опроса", details={"причина": "все вопросы пройдены"})
             
             text = "✅ *Спасибо за ваши ответы!*\n\n"
             text += "📋 *Ваши ответы:*\n"
@@ -94,17 +98,19 @@ class SurveyHandler(BaseHandler):
         
         # Получаем текущий вопрос
         current_question = self.questions[current_question_num]
-        logger.info(f"[{user_id}] Отображается вопрос #{current_question_num+1}: {current_question}")
+        logger.user_action(user_id, "Отображение вопроса", details={"номер": current_question_num+1, "вопрос": current_question})
         
         # Детальная диагностика
-        logger.info(f"[{user_id}] Детали вопроса #{current_question_num+1}: тип={type(current_question)}, длина={len(str(current_question))}")
+        logger.data_processing("вопрос", "Анализ вопроса", details={"номер": current_question_num+1, "тип": str(type(current_question)), 
+                               "длина": len(str(current_question)), "user_id": user_id})
         
         # Добавлена проверка и форматирование вопроса
         display_question = current_question
         
         # Если вопрос слишком короткий или это только число, пробуем найти более полное описание
         if len(str(current_question)) <= 3 or str(current_question).isdigit():
-            logger.warning(f"[{user_id}] Обнаружен потенциально некорректный вопрос: '{current_question}'")
+            logger.warning(f"Обнаружен потенциально некорректный вопрос: '{current_question}' (некорректный_вопрос)", 
+                          details={"user_id": user_id, "длина": len(str(current_question))})
             
             # Пробуем получить вопрос с полным описанием
             try:
@@ -127,14 +133,16 @@ class SurveyHandler(BaseHandler):
                                 break
                                 
                         if not already_asked:
-                            logger.info(f"[{user_id}] Заменяем короткий вопрос '{current_question}' на полный: '{full_question}'")
+                            logger.data_processing("вопрос", "Замена короткого вопроса", details={"вопрос": current_question, 
+                                                  "на": full_question, "user_id": user_id})
                             display_question = full_question
                             # Обновляем вопрос в списке вопросов для исправления проблемы
                             self.questions[current_question_num] = full_question
                             found_full_question = True
                             break
                         else:
-                            logger.info(f"[{user_id}] Пропускаем уже заданный вопрос: '{full_question}'")
+                            logger.data_processing("вопрос", "Пропуск вопроса", details={"вопрос": full_question, 
+                                                  "причина": "уже задан", "user_id": user_id})
                 
                 # Если не нашли подходящий вопрос в словаре, ищем в листе напрямую
                 if not found_full_question:
@@ -154,20 +162,23 @@ class SurveyHandler(BaseHandler):
                                             break
                                             
                                     if not already_asked:
-                                        logger.info(f"[{user_id}] Заменяем короткий вопрос '{current_question}' на полный из таблицы: '{row[0]}'")
+                                        logger.data_processing("вопрос", "Замена короткого вопроса", details={"вопрос": current_question, 
+                                                      "на": row[0], "user_id": user_id})
                                         display_question = row[0]
                                         # Обновляем вопрос в списке вопросов
                                         self.questions[current_question_num] = row[0]
                                         found_full_question = True
                                         break
                                     else:
-                                        logger.info(f"[{user_id}] Пропускаем уже заданный вопрос из таблицы: '{row[0]}'")
+                                        logger.data_processing("вопрос", "Пропуск вопроса", details={"вопрос": row[0], 
+                                                      "причина": "уже задан", "user_id": user_id})
                         
                         # Если мы все еще не нашли вопрос, это может быть новый вопрос
                         if not found_full_question:
-                            logger.warning(f"[{user_id}] Не удалось найти полный текст для вопроса '{current_question}', оставляем как есть")
+                            logger.warning(f"Не удалось найти полный текст для вопроса (полный_текст_не_найден)", 
+                                        details={"вопрос": current_question, "user_id": user_id})
             except Exception as e:
-                logger.error(f"[{user_id}] Ошибка при получении полного текста вопроса: {e}")
+                logger.error("получение_полного_текста_вопроса", e, details={"user_id": user_id, "question": current_question})
         
         # Проверяем, есть ли у текущего вопроса варианты ответов
         # Сначала проверяем варианты для отображаемого вопроса (он может отличаться от current_question)
@@ -175,16 +186,19 @@ class SurveyHandler(BaseHandler):
         if not options:
             # Если для display_question нет вариантов, проверяем для original_question
             options = self.questions_with_options.get(current_question, [])
-            logger.info(f"[{user_id}] Используем варианты ответов для оригинального вопроса, так как для display_question их нет")
+            logger.data_processing("варианты", "Использование вариантов оригинального вопроса", 
+                                details={"причина": "для display_question нет вариантов", "user_id": user_id})
         
         # Добавляем диагностику вариантов ответов
-        logger.info(f"[{user_id}] Варианты ответов для вопроса #{current_question_num+1}: {options}")
+        logger.data_processing("варианты", "Анализ вариантов ответов", 
+                            details={"номер_вопроса": current_question_num+1, "вариантов": len(options), "user_id": user_id})
         
         # Проверяем, находимся ли мы в подварианте вопроса
         current_parent_answer = context.user_data.get('current_parent_answer')
         
         if current_parent_answer:
-            logger.info(f"[{user_id}] Выбран родительский ответ: {current_parent_answer}")
+            logger.user_action(user_id, "Работа с подвариантами", 
+                            details={"родительский_ответ": current_parent_answer})
             
             # Ищем варианты, соответствующие родительскому ответу
             parent_option = None
@@ -197,22 +211,24 @@ class SurveyHandler(BaseHandler):
                 # Проверяем, есть ли у родительского варианта подварианты
                 sub_options = parent_option.get("sub_options")
                 
-                # Проверяем, есть ли у родительского варианта подсказка для свободного ввода
+                # Проверяем, есть ли у родительского варианта подсказку для свободного ввода
                 free_text_prompt = parent_option.get("free_text_prompt", "")
                 
                 # Проверяем формат подвариантов
                 if sub_options is None or not isinstance(sub_options, list):
                     # Некорректные подварианты, сбрасываем родительский ответ
-                    logger.warning(f"[{user_id}] Некорректный формат подвариантов: {sub_options}, сброс")
+                    logger.warning(f"Некорректный формат подвариантов, сброс (некорректные_подварианты)", 
+                                 details={"подварианты": str(sub_options), "user_id": user_id})
                     context.user_data.pop('current_parent_answer', None)
                     return await self.send_question(update, context)
                 
-                # Если у варианта есть подсказка для свободного ввода или список пуст, это свободный ответ
+                # Если у варианта есть подсказка для свободного ответа или список пуст, это свободный ответ
                 if free_text_prompt or sub_options == []:
                     # Определяем подсказку для свободного ответа
                     if free_text_prompt:
                         prompt_text = f"*{display_question}*\n\n📝 *{free_text_prompt}*"
-                        logger.info(f"[{user_id}] Использование подсказки для свободного ввода: {free_text_prompt}")
+                        logger.user_action(user_id, "Использование подсказки для свободного ввода", 
+                                        details={"подсказка": free_text_prompt})
                     else:
                         prompt_text = f"*{display_question}*\n\n📝 *Введите свой ответ:*"
                     
@@ -224,7 +240,8 @@ class SurveyHandler(BaseHandler):
                             resize_keyboard=True
                         )
                     )
-                    logger.info(f"[{user_id}] Запрошен свободный ответ на подвопрос: {prompt_text}")
+                    logger.user_action(user_id, "Запрос свободного ответа", 
+                                     details={"тип": "подвопрос", "текст_подсказки": prompt_text[:50] + "..."})
                     return f"QUESTION_{current_question_num}_SUB"
                 
                 # Есть подварианты для выбора
@@ -250,7 +267,8 @@ class SurveyHandler(BaseHandler):
                             resize_keyboard=True
                         )
                     )
-                    logger.info(f"[{user_id}] Обнаружена и преобразована подсказка в свободный ввод: {free_text_prompt}")
+                    logger.user_action(user_id, "Обнаружение свободного ввода", 
+                                   details={"тип": "из подсказки", "подсказка": free_text_prompt[:50]})
                     return f"QUESTION_{current_question_num}_SUB"
                 
                 # Добавляем кнопку возврата к родительским вариантам
@@ -265,11 +283,13 @@ class SurveyHandler(BaseHandler):
                     parse_mode='Markdown'
                 )
                 
-                logger.info(f"[{user_id}] Отображаются подварианты для ответа '{current_parent_answer}'")
+                logger.user_action(user_id, "Отображение подвариантов", 
+                                details={"родительский_ответ": current_parent_answer, "количество": len(keyboard)-1})
                 return f"QUESTION_{current_question_num}_SUB"
             else:
                 # Родительский вариант не найден
-                logger.warning(f"[{user_id}] Родительский вариант не найден: {current_parent_answer}")
+                logger.warning(f"Родительский вариант не найден (родительский_вариант_не_найден)", 
+                            details={"вариант": current_parent_answer, "user_id": user_id})
                 context.user_data.pop('current_parent_answer', None)
                 return await self.send_question(update, context)
         
@@ -281,7 +301,8 @@ class SurveyHandler(BaseHandler):
                 parse_mode='Markdown',
                 reply_markup=ReplyKeyboardRemove()
             )
-            logger.info(f"[{user_id}] Запрошен свободный ответ на вопрос #{current_question_num+1}")
+            logger.user_action(user_id, "Запрос свободного ответа", 
+                            details={"вопрос": current_question_num+1, "тип": "основной вопрос"})
             return f"QUESTION_{current_question_num}"
         
         # Создаем клавиатуру с вариантами ответов
@@ -298,7 +319,8 @@ class SurveyHandler(BaseHandler):
                 
                 # Логируем информацию о варианте для отладки
                 if has_free_text and has_prompt:
-                    logger.info(f"[{user_id}] Обнаружен вариант со свободным вводом: {opt['text']} с подсказкой: {opt.get('free_text_prompt', '')}")
+                    logger.data_processing("варианты", "Анализ варианта со свободным вводом", 
+                                       details={"вариант": opt['text'], "подсказка": opt.get('free_text_prompt', '')[:50], "user_id": user_id})
                 
                 # Добавляем вариант в клавиатуру без смайлика
                 keyboard.append([KeyboardButton(option_text)])
@@ -315,7 +337,8 @@ class SurveyHandler(BaseHandler):
             parse_mode='Markdown'
         )
         
-        logger.info(f"[{user_id}] Отображен вопрос #{current_question_num+1} с {len(keyboard)} вариантами ответов")
+        logger.user_action(user_id, "Отображение вопроса с вариантами", 
+                       details={"номер": current_question_num+1, "количество_вариантов": len(keyboard)})
         return f"QUESTION_{current_question_num}"
     
     async def handle_answer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -326,14 +349,16 @@ class SurveyHandler(BaseHandler):
         # Проверяем наличие ключа 'answers'
         if 'answers' not in context.user_data:
             context.user_data['answers'] = []
-            logger.warning(f"[{user_id}] Инициализирован пустой список ответов")
+            logger.warning(f"Принудительная инициализация списка ответов (answers_init)", 
+                        details={"user_id": user_id, "причина": "отсутствовал ключ 'answers'"})
         
         current_question_num = len(context.user_data['answers'])
         
         # Обработка подтверждения ответов
         if current_question_num == len(self.questions):
             if answer == "✅ Подтвердить":
-                logger.info(f"[{user_id}] Начало процесса сохранения ответов")
+                logger.user_action(user_id, "Подтверждение ответов", 
+                               details={"действие": "начало сохранения"})
                 start_time = datetime.now()
                 
                 # Сохраняем ответы с ID пользователя
@@ -341,16 +366,18 @@ class SurveyHandler(BaseHandler):
                 
                 if success:
                     save_duration = (datetime.now() - start_time).total_seconds()
-                    logger.info(f"[{user_id}] Ответы сохранены за {save_duration:.2f} секунд")
+                    logger.data_processing("ответы", "Сохранение ответов", 
+                                      details={"user_id": user_id, "количество": len(context.user_data['answers']), "длительность": f"{save_duration:.2f} сек"})
                     
                     # Отправляем сообщение о завершении опроса
                     await self.finish_survey(update, context)
                     
                     # Запускаем асинхронное обновление статистики после отправки сообщения
-                    logger.info(f"[{user_id}] Запуск асинхронного обновления статистики")
+                    logger.data_processing("статистика", "Запуск обновления статистики", 
+                                       details={"режим": "асинхронный", "user_id": user_id})
                     asyncio.create_task(self.update_statistics_async())
                 else:
-                    logger.error(f"[{user_id}] Ошибка при сохранении ответов")
+                    logger.error("сохранение_ответов", None, user_id=user_id, details={"operation": "save_answers"})
                     await update.message.reply_text(
                         "❌ Произошла ошибка при сохранении ответов. Пожалуйста, попробуйте позже.",
                         reply_markup=ReplyKeyboardRemove()
@@ -394,7 +421,8 @@ class SurveyHandler(BaseHandler):
             
             if parent_option:
                 # Добавляем отладочную информацию о структуре родительского варианта
-                logger.info(f"[{user_id}] Родительский вариант '{parent_answer}', структура: {parent_option}")
+                logger.data_processing("варианты", "Анализ родительского варианта", 
+                                   details={"вариант": parent_answer, "структура": str(parent_option)[:100], "user_id": user_id})
                 
                 # Специальная проверка для возврата к основным вариантам
                 if answer == "◀️ Назад к вариантам":
@@ -412,10 +440,12 @@ class SurveyHandler(BaseHandler):
                     # Сохраняем свободный ответ в структурированном формате
                     if free_text_prompt:
                         full_answer = f"{parent_answer} - {answer}"
-                        logger.info(f"[{user_id}] Сохранен свободный ответ с пользовательским вопросом: {full_answer} (вопрос: {free_text_prompt})")
+                        logger.user_action(user_id, "Сохранение свободного ответа", 
+                                        details={"тип": "с пользовательским вопросом", "ответ": full_answer, "вопрос": free_text_prompt[:50]})
                     else:
                         full_answer = f"{parent_answer} - {answer}"
-                        logger.info(f"[{user_id}] Сохранен свободный ответ: {full_answer}")
+                        logger.user_action(user_id, "Сохранение свободного ответа", 
+                                        details={"ответ": full_answer})
                     
                     context.user_data['answers'].append(full_answer)
                     # Очищаем текущий родительский ответ
@@ -432,7 +462,8 @@ class SurveyHandler(BaseHandler):
                     # Обрабатываем как свободный ответ, даже если подварианты не пустые
                     free_text_prompt = parent_option["free_text_prompt"]
                     full_answer = f"{parent_answer} - {answer}"
-                    logger.info(f"[{user_id}] Сохранен свободный ответ с подсказкой: {full_answer} (подсказка: {free_text_prompt})")
+                    logger.user_action(user_id, "Обработка свободного ответа", 
+                                    details={"тип": "подсказка из подвариантов", "подсказка": free_text_prompt[:50]})
                     
                     context.user_data['answers'].append(full_answer)
                     # Очищаем текущий родительский ответ
@@ -447,7 +478,8 @@ class SurveyHandler(BaseHandler):
                     context.user_data['answers'].append(parent_answer)
                     # Очищаем текущий родительский ответ
                     context.user_data.pop('current_parent_answer', None)
-                    logger.info(f"[{user_id}] Сохранен ответ без подвариантов: {parent_answer}")
+                    logger.user_action(user_id, "Сохранение ответа", 
+                                   details={"тип": "без подвариантов", "ответ": parent_answer})
                     
                     # Переходим к следующему вопросу
                     return await self.send_question(update, context)
@@ -470,13 +502,15 @@ class SurveyHandler(BaseHandler):
                 context.user_data['answers'].append(full_answer)
                 # Очищаем текущий родительский ответ
                 context.user_data.pop('current_parent_answer', None)
-                logger.info(f"[{user_id}] Сохранен составной ответ: {full_answer}")
+                logger.user_action(user_id, "Сохранение составного ответа", 
+                               details={"ответ": full_answer})
                 
                 # Переходим к следующему вопросу
                 return await self.send_question(update, context)
             else:
                 # Если родительский вариант не найден, сбрасываем context.user_data['current_parent_answer']
-                logger.warning(f"[{user_id}] Родительский вариант '{parent_answer}' не найден")
+                logger.warning(f"Родительский вариант не найден (родительский_вариант_не_найден)", 
+                             details={"вариант": current_parent_answer, "user_id": user_id})
                 context.user_data.pop('current_parent_answer', None)
                 # Повторно отправляем текущий вопрос
                 return await self.send_question(update, context)
@@ -494,7 +528,8 @@ class SurveyHandler(BaseHandler):
                 is_valid_option = True
                 selected_option = opt
                 # Добавляем отладочную информацию о структуре выбранного варианта
-                logger.info(f"[{user_id}] Выбран вариант: {answer}, структура: {selected_option}")
+                logger.data_processing("варианты", "Анализ выбранного варианта", 
+                                   details={"ответ": answer, "структура": str(selected_option)[:100], "user_id": user_id})
                 break
             elif not isinstance(opt, dict) and str(opt) == answer:
                 is_valid_option = True
@@ -504,13 +539,15 @@ class SurveyHandler(BaseHandler):
             # Если ответ не соответствует ни одному из вариантов или нет доступных вариантов,
             # считаем это свободным ответом для вопроса без вариантов
             context.user_data['answers'].append(answer)
-            logger.info(f"[{user_id}] Сохранен свободный ответ для вопроса без вариантов: {answer}")
+            logger.user_action(user_id, "Сохранение ответа", 
+                           details={"тип": "свободный для вопроса без вариантов", "ответ": answer})
         else:
             # Если у выбранного варианта есть ключ sub_options
             if selected_option and "sub_options" in selected_option:
                 sub_options = selected_option.get("sub_options")
                 # Добавляем отладочную информацию о структуре выбранного варианта и его подвариантах
-                logger.info(f"[{user_id}] Проверка sub_options для '{answer}': {sub_options}, тип: {type(sub_options)}")
+                logger.data_processing("варианты", "Проверка подвариантов", 
+                                   details={"ответ": answer, "тип_подвариантов": str(type(sub_options)), "user_id": user_id})
                 
                 # Проверяем тип sub_options и его содержимое
                 if isinstance(sub_options, list):
@@ -521,11 +558,20 @@ class SurveyHandler(BaseHandler):
                         # Запоминаем пользовательский вопрос для свободного ответа, если он задан
                         free_text_prompt = selected_option.get("free_text_prompt", "")
                         if free_text_prompt:
-                            logger.info(f"[{user_id}] Найден пользовательский вопрос для свободного ввода: {free_text_prompt}")
+                            logger.data_processing("варианты", "Обработка пользовательского вопроса", 
+                                               details={"вопрос_для_ввода": free_text_prompt[:50], "user_id": user_id})
                         
-                        # ВАЖНОЕ ИЗМЕНЕНИЕ: Если выбран вариант с свободным вводом (пустой список sub_options),
-                        # переходим к методу send_question, который отобразит форму ввода
-                        logger.info(f"[{user_id}] Установлен родительский ответ для свободного ввода: {answer}")
+                        # Сохраняем подсказку как free_text_prompt, если она не установлена и есть элементы в sub_options
+                        if not free_text_prompt and sub_options and len(sub_options) > 0:
+                            free_text_prompt = sub_options[0]
+                            selected_option["free_text_prompt"] = free_text_prompt
+                        
+                        selected_option["sub_options"] = []  # Делаем пустой список, чтобы обозначить свободный ответ
+                        
+                        logger.data_processing("варианты", "Преобразование подсказки", 
+                                          details={"тип": "в свободный ввод", "подсказка": free_text_prompt[:50], "user_id": user_id})
+                        logger.user_action(user_id, "Подготовка свободного ввода", 
+                                       details={"тип": "установка родительского ответа", "ответ": answer})
                         return await self.send_question(update, context)
                     # Проверяем, является ли первый подвариант подсказкой для свободного ввода
                     elif sub_options and isinstance(sub_options[0], str) and ("вопрос для" in sub_options[0].lower() or "введите" in sub_options[0].lower()):
@@ -533,22 +579,26 @@ class SurveyHandler(BaseHandler):
                         context.user_data['current_parent_answer'] = answer
                         
                         # Сохраняем подсказку как free_text_prompt
-                        free_text_prompt = sub_options[0]
+                        free_text_prompt = sub_options[0] if sub_options and len(sub_options) > 0 else "Введите свой ответ"
                         selected_option["free_text_prompt"] = free_text_prompt
                         selected_option["sub_options"] = []  # Делаем пустой список, чтобы обозначить свободный ответ
                         
-                        logger.info(f"[{user_id}] Преобразован вариант в свободный ввод с подсказкой: {free_text_prompt}")
-                        logger.info(f"[{user_id}] Установлен родительский ответ для свободного ввода: {answer}")
+                        logger.data_processing("варианты", "Преобразование подсказки", 
+                                          details={"тип": "в свободный ввод", "подсказка": free_text_prompt[:50], "user_id": user_id})
+                        logger.user_action(user_id, "Подготовка свободного ввода", 
+                                       details={"тип": "установка родительского ответа", "ответ": answer})
                         return await self.send_question(update, context)
                     elif sub_options:  # Непустой список - выбор подварианта
                         # Есть вложенные варианты для выбора
                         context.user_data['current_parent_answer'] = answer
-                        logger.info(f"[{user_id}] Установлен родительский ответ для выбора подвариантов: {answer}")
+                        logger.user_action(user_id, "Подготовка подвариантов", 
+                                       details={"тип": "установка родительского ответа", "ответ": answer})
                         return await self.send_question(update, context)
                 
             # Это обычный вариант без подвариантов или с некорректными подвариантами
             context.user_data['answers'].append(answer)
-            logger.info(f"[{user_id}] Сохранен обычный ответ: {answer}")
+            logger.user_action(user_id, "Сохранение ответа", 
+                           details={"тип": "без подвариантов", "ответ": answer})
         
         # Переходим к следующему вопросу
         return await self.send_question(update, context)
@@ -560,7 +610,8 @@ class SurveyHandler(BaseHandler):
     
     async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показ статистики опроса"""
-        logger.info(f"Пользователь {update.effective_user.id} запросил статистику")
+        user_id = update.effective_user.id
+        logger.user_action(user_id, "Запрос статистики", details={"тип": "общая статистика"})
         
         # Получаем общее количество пройденных опросов
         total_surveys = self.sheets.get_total_surveys_count()
@@ -628,7 +679,8 @@ class SurveyHandler(BaseHandler):
         
         # Проверяем длину статистики и разбиваем на части при необходимости
         if len(statistics) > 4000:
-            logger.warning(f"Статистика слишком длинная ({len(statistics)} символов), разбиваем на части")
+            logger.warning(f"Статистика слишком длинная, необходимо разбиение (длинная_статистика)", 
+                         details={"длина": len(statistics), "user_id": user_id})
             
             # Разбиваем на части примерно по 4000 символов
             parts = []
@@ -663,17 +715,16 @@ class SurveyHandler(BaseHandler):
     async def update_statistics_async(self):
         """Асинхронное обновление статистики после опроса"""
         try:
-            start_time = datetime.now()
-            logger.info(f"Запуск обновления статистики...")
-            
-            # Выполняем обновление
-            stats_updated = self.sheets.update_statistics()
-            
-            duration = (datetime.now() - start_time).total_seconds()
-            if stats_updated:
-                logger.info(f"Статистика успешно обновлена за {duration:.2f} секунд")
-            else:
-                logger.warning(f"Обновление статистики не выполнено за {duration:.2f} секунд")
-        
+            start_time = time.time()
+            logger.data_processing("статистика", "Обновление статистики", details={"этап": "начало"})
+            self.sheets.update_statistics()
+            duration = time.time() - start_time
+            logger.data_processing("статистика", "Обновление статистики", details={"этап": "завершено", "длительность": f"{duration:.2f} сек"})
         except Exception as e:
-            logger.error(f"Ошибка при обновлении статистики: {e}") 
+            try:
+                duration = time.time() - start_time
+            except:
+                duration = 0
+            logger.warning(f"Ошибка обновления статистики (stat_update_failed)", 
+                         details={"причина": str(e), "user_id": update.effective_user.id})
+            logger.error("обновление_статистики", e, details={"operation": "update_statistics"}) 

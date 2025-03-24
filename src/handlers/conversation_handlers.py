@@ -2,7 +2,6 @@
 Модуль для создания обработчиков диалогов
 """
 
-import logging
 from telegram.ext import (
     CommandHandler, MessageHandler as TelegramMessageHandler, 
     ConversationHandler, filters, CallbackQueryHandler
@@ -14,13 +13,14 @@ from handlers.admin_handlers import AdminHandler
 from handlers.edit_handlers import EditHandler
 from handlers.message_handlers import MessageHandler as CustomMessageHandler
 from handlers.post_handlers import PostHandler
+from utils.logger import get_logger
 
 # Настройка логирования
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 def create_survey_handler(survey_handler: SurveyHandler) -> ConversationHandler:
     """Создает обработчик для проведения опроса"""
-    logger.info("Создание обработчика опроса")
+    logger.init("conversation_handlers", "Создание обработчика опроса")
     
     # Создаем базовые состояния
     survey_states = {}
@@ -43,7 +43,7 @@ def create_survey_handler(survey_handler: SurveyHandler) -> ConversationHandler:
     
     # Добавляем динамические состояния для каждого вопроса
     questions_count = len(survey_handler.questions)
-    logger.info(f"Добавление состояний для {questions_count} вопросов")
+    logger.data_processing("состояния_опроса", "Добавление состояний для вопросов", details={"количество": questions_count})
     
     for i in range(questions_count):
         # Основное состояние для выбора варианта ответа
@@ -77,7 +77,7 @@ def create_survey_handler(survey_handler: SurveyHandler) -> ConversationHandler:
 
 def create_admin_handlers(admin_handler: AdminHandler, admin_ids: list) -> list:
     """Создает обработчики для административных команд"""
-    logger.info("Создание обработчиков администрирования")
+    logger.init("conversation_handlers", "Создание обработчиков администрирования")
     
     handlers = []
     
@@ -219,7 +219,7 @@ def create_admin_handlers(admin_handler: AdminHandler, admin_ids: list) -> list:
 
 def create_edit_handlers(edit_handler: EditHandler, admin_ids: list) -> list:
     """Создает обработчики для редактирования вопросов"""
-    logger.info("Создание обработчиков редактирования")
+    logger.init("conversation_handlers", "Создание обработчиков редактирования")
     
     handlers = []
     
@@ -280,8 +280,8 @@ def create_edit_handlers(edit_handler: EditHandler, admin_ids: list) -> list:
     return handlers
 
 def create_message_handlers(message_handler: CustomMessageHandler, admin_ids: list) -> ConversationHandler:
-    """Создает обработчик для редактирования системных сообщений"""
-    logger.info("Создание обработчика сообщений")
+    """Создает обработчик для редактирования сообщений"""
+    logger.init("conversation_handlers", "Создание обработчика сообщений")
     
     return ConversationHandler(
         entry_points=[
@@ -310,8 +310,8 @@ def create_message_handlers(message_handler: CustomMessageHandler, admin_ids: li
     )
 
 def create_post_handlers(post_handler: PostHandler, admin_ids: list) -> list:
-    """Создание обработчиков для постов"""
-    logger.info("Создание обработчиков постов")
+    """Создает обработчики для работы с постами"""
+    logger.init("conversation_handlers", "Создание обработчиков постов")
     
     return [
         ConversationHandler(

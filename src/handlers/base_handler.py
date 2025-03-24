@@ -2,14 +2,14 @@
 Базовый класс для обработчиков сообщений
 """
 
-import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler, Application
 
 from utils.sheets import GoogleSheets
+from utils.logger import get_logger
 
 # Настройка логирования
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 class BaseHandler:
     """Базовый класс для обработчиков сообщений"""
@@ -17,15 +17,23 @@ class BaseHandler:
     def __init__(self, sheets: GoogleSheets, application: Application = None):
         """Инициализация обработчика"""
         self.sheets = sheets
+        # Загружаем вопросы только один раз при инициализации
         self.questions_with_options = self.sheets.get_questions_with_options()
         self.questions = list(self.questions_with_options.keys())
         self.application = application
-        logger.info(f"Инициализирован обработчик с {len(self.questions)} вопросами")
+        logger.init("base_handler", f"Инициализация обработчика", details={"вопросов": len(self.questions)})
+    
+    def refresh_questions(self):
+        """Обновляет вопросы из источника данных"""
+        # Перезагружаем вопросы
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
+        logger.data_processing("вопросы", "Обновление списка вопросов", details={"количество": len(self.questions)})
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /start"""
         user = update.effective_user
-        logger.info(f"Пользователь {user.id} запустил бота")
+        logger.user_action(user.id, "Запуск бота", "Начало взаимодействия")
         
         # Очищаем данные пользователя
         context.user_data.clear()
@@ -34,7 +42,7 @@ class BaseHandler:
         if not self.sheets.is_user_exists(user.id):
             username = user.username if user.username else "Не указан"
             if not self.sheets.add_user(user.id, username):
-                logger.error(f"Не удалось зарегистрировать пользователя {user.id}")
+                logger.error("регистрация_пользователя", details={"user_id": user.id})
         
         # Создаем клавиатуру с двумя кнопками
         keyboard = [
@@ -58,7 +66,7 @@ class BaseHandler:
                     reply_markup=reply_markup
                 )
             except Exception as e:
-                logger.error(f"Ошибка при отправке изображения: {e}")
+                logger.error("отправка_изображения", e, details={"message_type": "start"})
                 # В случае ошибки отправляем просто текст
                 await update.message.reply_text(
                     formatted_message,
@@ -75,19 +83,20 @@ class BaseHandler:
     
     async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /restart"""
-        logger.info(f"Пользователь {update.effective_user.id} перезапустил бота")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Перезапуск бота", "Обновление данных")
         
-        # Обновляем список вопросов
-        self.questions_with_options = self.sheets.get_questions_with_options()
-        self.questions = list(self.questions_with_options.keys())
-        logger.info(f"Обновлен список вопросов: {len(self.questions)} вопросов")
+        # Обновляем список вопросов принудительно сбрасывая кэш
+        self.sheets.invalidate_questions_cache()
+        self.refresh_questions()
         
         # Перезапускаем бота
         return await self.start(update, context)
     
     async def cancel_editing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отмена редактирования"""
-        logger.info(f"Пользователь {update.effective_user.id} отменил редактирование")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Отмена редактирования")
         
         await update.message.reply_text(
             "❌ Действие отменено",
@@ -98,7 +107,7 @@ class BaseHandler:
     async def finish_survey(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Завершение опроса"""
         user = update.effective_user
-        logger.info(f"Пользователь {user.id} завершил опрос")
+        logger.user_action(user.id, "Завершение опроса", "Регистрация завершена")
         
         # Получаем сообщение после опроса
         message_data = self.sheets.get_message('finish')
@@ -121,7 +130,8 @@ class BaseHandler:
                     reply_markup=reply_markup
                 )
             except Exception as e:
-                logger.error(f"Ошибка при отправке изображения: {e}")
+                logger.error("отправка_изображения", e, user_id=user.id, 
+                            details={"message_type": "finish"})
                 # В случае ошибки отправляем только текст с клавиатурой
                 await update.message.reply_text(
                     formatted_message,
@@ -138,7 +148,7 @@ class BaseHandler:
     async def show_event_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает информацию о мероприятии"""
         user = update.effective_user
-        logger.info(f"Пользователь {user.id} запросил информацию о мероприятии")
+        logger.user_action(user.id, "Запрос информации о мероприятии")
         
         # Создаем клавиатуру для возврата
         keyboard = [
@@ -162,7 +172,8 @@ class BaseHandler:
                     reply_markup=reply_markup
                 )
             except Exception as e:
-                logger.error(f"Ошибка при отправке изображения: {e}")
+                logger.error("отправка_изображения", e, user_id=user.id, 
+                            details={"message_type": "event_info"})
                 # В случае ошибки отправляем только текст
                 await update.message.reply_text(
                     event_info,
@@ -180,7 +191,7 @@ class BaseHandler:
     async def back_to_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Возвращает пользователя к начальному экрану"""
         user = update.effective_user
-        logger.info(f"Пользователь {user.id} вернулся к начальному экрану")
+        logger.user_action(user.id, "Возврат к начальному экрану")
         
         # Просто перенаправляем на метод start
         return await self.start(update, context) 

@@ -2,5 +2,11 @@
 Пакет с утилитами для бота
 """
 
-# Импортируем sheets_questions для добавления методов в класс GoogleSheets
+# Инициализация синглтона при загрузке пакета
+from utils.questions_cache import QuestionsCache
+questions_cache = QuestionsCache()
+
+# Импортируем основные модули для обеспечения их загрузки
+# Это гарантирует, что все методы будут корректно добавлены
+import utils.sheets
 import utils.sheets_questions 

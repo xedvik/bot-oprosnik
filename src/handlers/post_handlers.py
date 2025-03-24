@@ -2,7 +2,6 @@
 Обработчики для создания и отправки постов
 """
 
-import logging
 import os
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,9 +14,10 @@ from models.states import *
 from utils.sheets import GoogleSheets
 from handlers.base_handler import BaseHandler
 from config import MAX_IMAGE_SIZE
+from utils.logger import get_logger
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
+# Получаем логгер для модуля
+logger = get_logger()
 
 class PostHandler(BaseHandler):
     """Обработчики для создания и отправки постов"""
@@ -28,7 +28,8 @@ class PostHandler(BaseHandler):
     
     async def create_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало создания поста"""
-        logger.info(f"Пользователь {update.effective_user.id} начал создание поста")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Создание поста", "Начало создания")
         
         # Добавляем пустой словарь для хранения данных о посте
         if not context.user_data.get('post'):
@@ -50,7 +51,7 @@ class PostHandler(BaseHandler):
     async def handle_post_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка названия поста"""
         user_id = update.effective_user.id
-        logger.info(f"Пользователь {user_id} ввел название поста")
+        logger.admin_action(user_id, "Создание поста", "Ввод названия")
         
         # Сохраняем название поста
         context.user_data['post']['title'] = update.message.text
@@ -66,7 +67,7 @@ class PostHandler(BaseHandler):
     async def handle_post_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка содержимого поста"""
         user_id = update.effective_user.id
-        logger.info(f"Пользователь {user_id} ввел текст поста")
+        logger.admin_action(user_id, "Создание поста", "Ввод текста")
         
         # Сохраняем текст поста
         context.user_data['post']['text'] = update.message.text
@@ -91,7 +92,7 @@ class PostHandler(BaseHandler):
         user_choice = update.message.text
         
         if user_choice == "📷 Прикрепить изображение":
-            logger.info(f"Пользователь {user_id} решил прикрепить изображение")
+            logger.admin_action(user_id, "Создание поста", "Выбор прикрепления изображения")
             
             await update.message.reply_text(
                 "Отправьте изображение (фото или файл изображения).\n"
@@ -102,7 +103,7 @@ class PostHandler(BaseHandler):
             return ADDING_POST_IMAGE
             
         elif user_choice == "⏭️ Пропустить":
-            logger.info(f"Пользователь {user_id} решил пропустить добавление изображения")
+            logger.admin_action(user_id, "Создание поста", "Пропуск добавления изображения")
             
             # Переходим к добавлению кнопки
             return await self.ask_add_button(update, context)
@@ -131,7 +132,7 @@ class PostHandler(BaseHandler):
             # Берем последнее (самое качественное) изображение
             photo = update.message.photo[-1]
             file_id = photo.file_id
-            logger.info(f"Пользователь {user_id} загрузил фото, file_id: {file_id}")
+            logger.admin_action(user_id, "Создание поста", "Загрузка фото", details={"file_id": file_id})
             
             # Сохраняем file_id изображения
             context.user_data['post']['image_file_id'] = file_id
@@ -157,7 +158,8 @@ class PostHandler(BaseHandler):
                     )
                     return ADDING_POST_IMAGE
                 
-                logger.info(f"Пользователь {user_id} загрузил документ-изображение, file_id: {file_id}")
+                logger.user_action(user_id, "Создание поста", "Загрузка документа-изображения", details={"file_id": file_id})
+                logger.admin_action(user_id, "Создание поста", "Загрузка документа-изображения", details={"file_id": file_id})
                 
                 # Сохраняем file_id изображения
                 context.user_data['post']['image_file_id'] = file_id
@@ -186,7 +188,7 @@ class PostHandler(BaseHandler):
     async def ask_add_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Спрашиваем, хочет ли пользователь добавить кнопку с ссылкой"""
         user_id = update.effective_user.id
-        logger.info(f"Спрашиваем пользователя {user_id} о добавлении кнопки со ссылкой")
+        logger.admin_action(user_id, "Создание поста", "Вопрос о добавлении кнопки со ссылкой")
         
         keyboard = [
             ["🔗 Добавить кнопку со ссылкой"],
@@ -207,7 +209,7 @@ class PostHandler(BaseHandler):
         user_choice = update.message.text
         
         if user_choice == "🔗 Добавить кнопку со ссылкой":
-            logger.info(f"Пользователь {user_id} решил добавить кнопку со ссылкой")
+            logger.user_action(user_id, "Создание поста", "Добавление кнопки со ссылкой")
             
             await update.message.reply_text(
                 "Введите текст, который будет отображаться на кнопке:",
@@ -217,7 +219,7 @@ class PostHandler(BaseHandler):
             return ENTERING_BUTTON_TEXT
             
         elif user_choice == "⏭️ Пропустить":
-            logger.info(f"Пользователь {user_id} решил пропустить добавление кнопки")
+            logger.user_action(user_id, "Создание поста", "Пропуск добавления кнопки")
             
             # Переходим к подтверждению поста
             return await self.show_post_preview(update, context)
@@ -247,7 +249,7 @@ class PostHandler(BaseHandler):
         
         # Сохраняем текст кнопки
         context.user_data['post']['button_text'] = button_text
-        logger.info(f"Пользователь {user_id} ввел текст кнопки: {button_text}")
+        logger.user_action(user_id, "Создание поста", "Ввод текста кнопки", details={"button_text": button_text})
         
         # Запрашиваем URL для кнопки
         await update.message.reply_text(
@@ -268,11 +270,11 @@ class PostHandler(BaseHandler):
         # Проверяем, что URL начинается с http:// или https://
         if not (button_url.startswith('http://') or button_url.startswith('https://')):
             button_url = 'https://' + button_url
-            logger.info(f"Добавлен https:// к URL: {button_url}")
+            logger.admin_action(user_id, "Редактирование URL", f"Добавлен https:// к URL: {button_url}")
         
         # Сохраняем URL кнопки
         context.user_data['post']['button_url'] = button_url
-        logger.info(f"Пользователь {user_id} ввел URL кнопки: {button_url}")
+        logger.user_action(user_id, "Создание поста", "Ввод URL кнопки", details={"button_url": button_url})
         
         # Переходим к подтверждению поста
         return await self.show_post_preview(update, context)
@@ -280,7 +282,7 @@ class PostHandler(BaseHandler):
     async def show_post_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показ предварительного просмотра поста"""
         user_id = update.effective_user.id
-        logger.info(f"Показ предварительного просмотра поста пользователю {user_id}")
+        logger.admin_action(user_id, "Создание поста", "Предварительный просмотр")
         
         post = context.user_data.get('post', {})
         post_title = post.get('title', '')
@@ -344,7 +346,7 @@ class PostHandler(BaseHandler):
                         reply_markup=inline_keyboard
                     )
         except Exception as e:
-            logger.error(f"Ошибка при отправке предварительного просмотра: {e}")
+            logger.error("ошибка_при_отправке_предварительного_просмотра", e)
             await update.message.reply_text(
                 "❌ Произошла ошибка при создании предварительного просмотра. Пожалуйста, попробуйте снова.",
                 reply_markup=ReplyKeyboardMarkup([["🔄 Начать заново"], ["❌ Отмена"]], resize_keyboard=True)
@@ -358,7 +360,7 @@ class PostHandler(BaseHandler):
         user_choice = update.message.text
         
         if user_choice == "✅ Подтвердить":
-            logger.info(f"Пользователь {user_id} подтвердил создание поста")
+            logger.user_action(user_id, "Создание поста", "Подтверждение создания поста")
             
             post = context.user_data.get('post', {})
             post_text = post.get('text', '')
@@ -401,7 +403,7 @@ class PostHandler(BaseHandler):
                 return ConversationHandler.END
                 
         elif user_choice == "🔄 Начать заново":
-            logger.info(f"Пользователь {user_id} решил начать создание поста заново")
+            logger.user_action(user_id, "Создание поста", "Начать заново")
             
             # Очищаем данные о посте
             context.user_data['post'] = {
@@ -461,11 +463,11 @@ class PostHandler(BaseHandler):
                 try:
                     await message.reply_text(text)
                 except Exception as e2:
-                    logger.error(f"Не удалось отправить новое сообщение о прогрессе: {e2}")
+                    logger.error("не_удалось_отправить_новое_сообщение_о_прогрессе", e2)
             else:
-                logger.error(f"Ошибка при обновлении сообщения о прогрессе: {e}")
+                logger.error("ошибка_при_обновлении_сообщения_о_прогрессе", e)
         except Exception as e:
-            logger.error(f"Ошибка при обновлении сообщения о прогрессе: {e}")
+            logger.error("ошибка_при_обновлении_сообщения_о_прогрессе", e)
     
     async def send_post_to_users(self, message, post, users_data):
         """Отправляет пост всем пользователям с обновлением прогресса"""
@@ -493,7 +495,7 @@ class PostHandler(BaseHandler):
                 f"📊 Прогресс: 0/{len(users_data)}"
             )
         except Exception as e:
-            logger.error(f"Ошибка при создании сообщения о прогрессе: {e}")
+            logger.error("ошибка_при_создании_сообщения_о_прогрессе", e)
             # Если не получилось создать сообщение о прогрессе, используем исходное
             progress_message = message
         
@@ -540,7 +542,7 @@ class PostHandler(BaseHandler):
                     )
                 
             except Exception as e:
-                logger.error(f"Ошибка при отправке поста пользователю {user[1]}: {e}")
+                logger.error("ошибка_при_отправке_поста_пользователю_user", e, user_id=1)
                 fail_count += 1
         
         # Отправляем финальное сообщение о результатах
@@ -564,7 +566,7 @@ class PostHandler(BaseHandler):
                     f"❌ Не удалось отправить: {fail_count}"
                 )
             except Exception as e:
-                logger.error(f"Не удалось отправить финальное сообщение: {e}")
+                logger.error("не_удалось_отправить_финальное_сообщение", e)
         
         return success_count, fail_count
     
@@ -574,7 +576,7 @@ class PostHandler(BaseHandler):
         user_choice = update.message.text
         
         if user_choice == "📨 Отправить всем пользователям":
-            logger.info(f"Пользователь {user_id} подтвердил отправку поста всем пользователям")
+            logger.user_action(user_id, "Отправка поста", "Рассылка всем пользователям")
             
             post_id = context.user_data.get('post_id')
             
@@ -609,7 +611,7 @@ class PostHandler(BaseHandler):
                 return ConversationHandler.END
                 
         elif user_choice == "⏭️ Не отправлять":
-            logger.info(f"Пользователь {user_id} решил не отправлять пост пользователям")
+            logger.user_action(user_id, "Действие пользователя", "решил не отправлять пост пользователям")
             
             await update.message.reply_text(
                 "✅ Пост создан, но не будет отправлен пользователям.\n"
@@ -643,7 +645,7 @@ class PostHandler(BaseHandler):
     async def list_posts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает список постов с возможностью отправки"""
         user_id = update.effective_user.id
-        logger.info(f"Пользователь {user_id} запросил список постов")
+        logger.user_action(user_id, "Управление постами", "Просмотр списка постов")
         
         # Получаем все посты
         posts = self.sheets.get_all_posts()
@@ -662,8 +664,8 @@ class PostHandler(BaseHandler):
             if len(admin) >= 3:  # ID, имя, описание
                 admin_names[admin[0]] = admin[1]  # ID -> имя
         
-        logger.info(f"Загружен словарь имён админов: {admin_names}")
-        logger.info(f"Полученные данные админов: {admin_data}")
+        logger.data_processing("админы", "Загружен словарь имён админов", details=admin_names)
+        logger.data_processing("админы", "Полученные данные админов", details={"данные": admin_data})
         
         # Формируем сообщение со списком постов
         posts_text = "📋 <b>Список созданных постов:</b>\n\n"
@@ -682,7 +684,7 @@ class PostHandler(BaseHandler):
             post_title = post.get('title', f"Пост #{post.get('id', '')}")
             
             # Логируем атрибуты поста для диагностики
-            logger.info(f"Пост #{i}: ID={post.get('id')}, admin_id={created_by}, author_name={author_name}")
+            logger.data_processing("посты", f"Пост #{i}: ID={post.get('id')}, admin_id={created_by}, author_name={author_name}")
             
             posts_text += f"<b>#{i} | {created_at}</b>\n"
             posts_text += f"👤 Автор: {author_name}\n"
@@ -721,7 +723,7 @@ class PostHandler(BaseHandler):
     async def cancel_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отмена создания поста"""
         user_id = update.effective_user.id
-        logger.info(f"Пользователь {user_id} отменил создание поста. Text: {update.message.text}")
+        logger.user_action(user_id, "Создание поста", "Отмена создания")
         
         # Очищаем данные о посте
         if 'post' in context.user_data:
@@ -730,7 +732,7 @@ class PostHandler(BaseHandler):
             del context.user_data['post_id']
         if 'edit_post_id' in context.user_data:
             del context.user_data['edit_post_id']
-            logger.info(f"Удален edit_post_id из context.user_data")
+            logger.admin_action(user_id, "Отмена редактирования", "Удаление данных редактирования")
         
         await update.message.reply_text(
             "✅ Создание поста отменено.",
@@ -784,7 +786,7 @@ class PostHandler(BaseHandler):
         # Если это отправка поста, извлекаем ID поста
         if callback_data.startswith("send_post:"):
             post_id = callback_data.split(":", 1)[1]
-            logger.info(f"Пользователь {user_id} выбрал отправку поста с ID {post_id}")
+            logger.user_action(user_id, "Отправка поста", "Выбор поста для отправки", details={"post_id": post_id})
             
             # Получаем информацию о посте
             post = self.sheets.get_post_by_id(post_id)
@@ -825,7 +827,7 @@ class PostHandler(BaseHandler):
         # Если это подтверждение отправки
         if callback_data.startswith("confirm_send:"):
             post_id = callback_data.split(":", 1)[1]
-            logger.info(f"Пользователь {user_id} подтвердил отправку поста с ID {post_id}")
+            logger.user_action(user_id, "Отправка поста", "Подтверждение отправки", details={"post_id": post_id})
             
             # Получаем информацию о посте
             post = self.sheets.get_post_by_id(post_id)
@@ -854,7 +856,7 @@ class PostHandler(BaseHandler):
         # Если это удаление поста
         if callback_data.startswith("delete_post:"):
             post_id = callback_data.split(":", 1)[1]
-            logger.info(f"Пользователь {user_id} выбрал удаление поста с ID {post_id}")
+            logger.user_action(user_id, "Управление постами", "Выбор поста для удаления", details={"post_id": post_id})
             
             # Получаем информацию о посте
             post = self.sheets.get_post_by_id(post_id)
@@ -896,7 +898,7 @@ class PostHandler(BaseHandler):
         # Если это подтверждение удаления
         if callback_data.startswith("confirm_delete:"):
             post_id = callback_data.split(":", 1)[1]
-            logger.info(f"Пользователь {user_id} подтвердил удаление поста с ID {post_id}")
+            logger.user_action(user_id, "Управление постами", "Подтверждение удаления", details={"post_id": post_id})
             
             # Удаляем пост
             if self.sheets.delete_post(post_id):
@@ -937,7 +939,7 @@ class PostHandler(BaseHandler):
             user_id = update.effective_user.id
             send_message = update.message.reply_text
         
-        logger.info(f"Пользователь {user_id} запросил управление постами")
+        logger.user_action(user_id, "Администрирование", "Открытие меню управления постами")
         
         # Получаем все посты
         posts = self.sheets.get_all_posts()
@@ -957,8 +959,8 @@ class PostHandler(BaseHandler):
             if len(admin) >= 3:  # ID, имя, описание
                 admin_names[admin[0]] = admin[1]  # ID -> имя
         
-        logger.info(f"Загружен словарь имён админов: {admin_names}")
-        logger.info(f"Полученные данные админов: {admin_data}")
+        logger.data_processing("админы", "Загружен словарь имён админов", details=admin_names)
+        logger.data_processing("админы", "Полученные данные админов", details={"данные": admin_data})
         
         # Формируем сообщение со списком постов
         posts_text = "📋 <b>Панель управления постами:</b>\n\n"
@@ -977,7 +979,7 @@ class PostHandler(BaseHandler):
             post_title = post.get('title', f"Пост #{post.get('id', '')}")
             
             # Логируем атрибуты поста для диагностики
-            logger.info(f"Пост #{i}: ID={post.get('id')}, admin_id={created_by}, author_name={author_name}")
+            logger.data_processing("посты", f"Пост #{i}: ID={post.get('id')}, admin_id={created_by}, author_name={author_name}")
             
             posts_text += f"<b>#{i} | {created_at}</b>\n"
             posts_text += f"👤 Автор: {author_name}\n"

@@ -3,8 +3,7 @@
 """
 
 import os
-import logging
-from logging.handlers import RotatingFileHandler
+import json
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
@@ -77,46 +76,63 @@ if not SPREADSHEET_ID:
     print("Тип переменной:", type(os.getenv("SPREADSHEET_ID")))
 
 # Настройки логирования
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bot.log")
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-def setup_logging():
-    """Настройка логирования"""
+# Теперь подключаем utils.logger после определения всех констант
+from utils.logger import get_logger, setup_logging, DEBUG, INFO, WARNING
+
+# Определяем уровень логирования после импорта констант
+LOG_LEVEL = INFO  # По умолчанию INFO
+if LOG_LEVEL_STR == "DEBUG":
+    LOG_LEVEL = DEBUG
+elif LOG_LEVEL_STR == "WARNING":
+    LOG_LEVEL = WARNING
+
+# Настройки для уровней логирования модулей
+MODULE_LOG_LEVELS = {
+    'utils.sheets': os.getenv("SHEETS_LOG_LEVEL", "INFO"),
+    'utils.questions_cache': os.getenv("CACHE_LOG_LEVEL", "INFO"),
+    'handlers.base_handler': os.getenv("HANDLER_LOG_LEVEL", "INFO"),
+    'httpx': "WARNING",
+    'telegram': "INFO",
+    'apscheduler': "INFO",
+    'gspread': "WARNING"
+}
+
+def configure_logging():
+    """
+    Настройка логирования для поддержки новой системы с AppLogger.
+    """
     # Создаем директорию для логов, если она не существует
     log_dir = os.path.dirname(LOG_FILE)
     if log_dir and not os.path.exists(log_dir):
         os.makedirs(log_dir)
     
-    # Настраиваем логирование
-    logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL),
-        format=LOG_FORMAT,
-        datefmt=LOG_DATE_FORMAT,
-        handlers=[
-            RotatingFileHandler(
-                LOG_FILE,
-                maxBytes=10*1024*1024,  # 10 MB
-                backupCount=5
-            ),
-            logging.StreamHandler()
-        ]
+    # Настраиваем глобальное логирование
+    setup_logging(
+        level=LOG_LEVEL,
+        log_file=LOG_FILE,
+        date_format=LOG_DATE_FORMAT
     )
     
-    # Отключаем лишние логи от библиотек
-    logging.getLogger("httpx").setLevel(logging.INFO)
-    logging.getLogger("telegram").setLevel(logging.INFO)
-    
-    # Создаем логгер для нашего приложения
-    logger = logging.getLogger(__name__)
-    logger.info("Логирование настроено")
+    # Получаем экземпляр нового логгера
+    app_logger = get_logger()
+    app_logger.data_processing("Логирование", "настроено", details={"action": "config_init"})
     
     # Логируем важные переменные окружения
-    logger.info(f"BOT_TOKEN: {'Указан' if BOT_TOKEN else 'Не указан'}")
-    logger.info(f"SPREADSHEET_ID: {SPREADSHEET_ID or 'Не указан'}")
-    logger.info(f"GOOGLE_CREDENTIALS_FILE: {GOOGLE_CREDENTIALS_FILE}")
+    app_logger.data_processing(
+        "Проверка", 
+        "переменные окружения", 
+        details={
+            "BOT_TOKEN": 'Указан' if BOT_TOKEN else 'Не указан',
+            "SPREADSHEET_ID": SPREADSHEET_ID or 'Не указан',
+            "GOOGLE_CREDENTIALS_FILE": GOOGLE_CREDENTIALS_FILE,
+            "action": "env_variables"
+        }
+    )
     
-    return logger
+    return app_logger
 
 

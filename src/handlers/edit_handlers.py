@@ -2,16 +2,16 @@
 Обработчики для редактирования вопросов
 """
 
-import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler
 
 from models.states import *
 from handlers.base_handler import BaseHandler
 from utils.sheets import GoogleSheets
+from utils.logger import get_logger
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
+# Получаем логгер для модуля
+logger = get_logger()
 
 class EditHandler(BaseHandler):
     """Обработчики для редактирования вопросов"""
@@ -24,7 +24,8 @@ class EditHandler(BaseHandler):
     
     async def edit_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало редактирования вопроса"""
-        logger.info(f"Пользователь {update.effective_user.id} начал редактирование вопроса")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Редактирование вопроса", "Начало процесса")
         
         # Очищаем данные пользователя
         context.user_data.clear()
@@ -58,7 +59,8 @@ class EditHandler(BaseHandler):
     async def handle_question_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка выбора вопроса для редактирования"""
         choice = update.message.text
-        logger.info(f"Получен выбор вопроса: {choice}")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Редактирование вопроса", "Выбор вопроса", details={"выбор": choice})
         
         if choice == "❌ Отмена":
             await update.message.reply_text(
@@ -73,14 +75,15 @@ class EditHandler(BaseHandler):
             
             # Проверяем, что номер вопроса в допустимом диапазоне
             if 0 <= question_num < len(self.questions):
-                logger.info(f"Номер вопроса: {question_num}, всего вопросов: {len(self.questions)}")
+                logger.data_processing("вопросы", "Обработка выбора вопроса", details={"user_id": user_id})
                 
                 # Сохраняем выбранный вопрос
                 selected_question = self.questions[question_num]
                 context.user_data['editing_question'] = selected_question
                 context.user_data['editing_question_num'] = question_num
                 
-                logger.info(f"Сохранен вопрос для редактирования: {selected_question}")
+                logger.admin_action(user_id, "Редактирование вопроса", "Выбран вопрос", 
+                                  details={"вопрос": selected_question, "номер": question_num})
                 
                 # Показываем меню редактирования
                 keyboard = [
@@ -97,14 +100,17 @@ class EditHandler(BaseHandler):
                 )
                 return EDITING_QUESTION
             else:
-                logger.error(f"Некорректный номер вопроса: {question_num}")
+                logger.error("invalid_question_number", "Некорректный номер вопроса", 
+                           details={"номер": question_num, "максимум": len(self.questions)-1}, 
+                           user_id=user_id)
                 await update.message.reply_text(
                     "❌ Некорректный номер вопроса. Пожалуйста, выберите из списка.",
                     reply_markup=ReplyKeyboardRemove()
                 )
                 return ConversationHandler.END
         except (ValueError, IndexError):
-            logger.error(f"Не удалось обработать выбор: {choice}")
+            logger.error("question_choice_processing_error", "Не удалось обработать выбор вопроса", 
+                       details={"выбор": choice}, user_id=user_id)
             await update.message.reply_text(
                 "❌ Пожалуйста, выберите вопрос из списка.",
                 reply_markup=ReplyKeyboardRemove()
@@ -114,10 +120,21 @@ class EditHandler(BaseHandler):
     async def handle_edit_menu_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка выбора действия в меню редактирования"""
         choice = update.message.text
-        logger.info(f"Выбрано действие в меню редактирования: {choice}")
+        user_id = update.effective_user.id
+        
+        # Проверяем отмену
+        if choice == "❌ Отмена":
+            await update.message.reply_text(
+                "❌ Редактирование отменено.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        logger.admin_action(user_id, "Выбор действия в меню редактирования", details={"выбор": choice})
         
         if 'editing_question' not in context.user_data:
-            logger.error("Ошибка: editing_question отсутствует в context.user_data")
+            logger.error("editing_question_missing", "Вопрос не выбран в данных пользователя", 
+                        user_id=user_id, details={"handler": "handle_edit_menu_choice"})
             await update.message.reply_text(
                 "❌ Ошибка: вопрос не выбран",
                 reply_markup=ReplyKeyboardRemove()
@@ -125,7 +142,7 @@ class EditHandler(BaseHandler):
             return ConversationHandler.END
             
         question = context.user_data['editing_question']
-        logger.info(f"Редактируемый вопрос: {question}")
+        logger.data_processing("Редактирование вопроса", details={"вопрос": question})
         
         # Получаем номер вопроса, если он есть
         question_num = context.user_data.get('editing_question_num')
@@ -134,17 +151,18 @@ class EditHandler(BaseHandler):
             try:
                 question_num = self.questions.index(question)
                 context.user_data['editing_question_num'] = question_num
-                logger.info(f"Номер вопроса определен: {question_num}")
+                logger.data_processing("вопросы", "Определение номера вопроса", details={"номер": question_num, "вопрос": question})
             except ValueError:
-                logger.error(f"Не удалось найти вопрос '{question}' в списке вопросов")
+                logger.error("question_not_found", "Вопрос не найден в списке", 
+                          user_id=user_id, details={"вопрос": question})
                 question_num = -1
         
         # Проверяем наличие вариантов ответов
         has_options = bool(self.questions_with_options[question])
-        logger.info(f"Наличие вариантов ответов: {has_options}")
+        logger.data_processing("Проверка вариантов ответов", details={"наличие_вариантов": has_options, "вопрос": question})
         
         if choice == "✏️ Изменить текст вопроса":
-            logger.info("Выбрано изменение текста вопроса")
+            logger.admin_action(user_id, "Выбор изменения текста вопроса", details={"вопрос": question})
             await update.message.reply_text(
                 f"Текущий текст вопроса:\n{question}\n\n"
                 "Введите новый текст вопроса:",
@@ -153,7 +171,7 @@ class EditHandler(BaseHandler):
             return EDITING_QUESTION_TEXT
             
         elif choice == "🔄 Изменить варианты ответов":
-            logger.info("Выбрано изменение вариантов ответов")
+            logger.admin_action(user_id, "Выбор изменения вариантов ответов", details={"вопрос": question})
             
             # Создаем улучшенную клавиатуру для редактирования вариантов
             keyboard = [
@@ -195,7 +213,7 @@ class EditHandler(BaseHandler):
                 "Выберите действие:",
                 reply_markup=reply_markup
             )
-            logger.info("Отправлено меню редактирования вариантов")
+            logger.data_processing("вопросы", "Отображение меню редактирования вариантов", details={"вопрос": question})
             return EDITING_OPTIONS
             
         elif choice == "❌ Отмена":
@@ -214,17 +232,20 @@ class EditHandler(BaseHandler):
 
     async def handle_question_text_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка редактирования текста вопроса"""
-        new_text = update.message.text
-        logger.info(f"Получен новый текст вопроса: {new_text}")
+        new_text = update.message.text.strip()
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Редактирование текста вопроса", details={"новый_текст": new_text})
         
         # Проверяем наличие необходимых данных
         if 'editing_question' not in context.user_data:
+            logger.error("editing_question_missing", "Вопрос для редактирования не найден", 
+                       user_id=user_id, details={"handler": "handle_question_text_edit"})
             await update.message.reply_text(
                 "❌ Ошибка: вопрос не выбран",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-        
+            
         old_question = context.user_data['editing_question']
         question_num = context.user_data.get('editing_question_num', -1)
         
@@ -234,12 +255,17 @@ class EditHandler(BaseHandler):
                 question_num = self.questions.index(old_question)
                 context.user_data['editing_question_num'] = question_num
             except ValueError:
+                logger.error("question_not_found", "Вопрос не найден в списке", 
+                          user_id=user_id, details={"вопрос": old_question})
                 await update.message.reply_text(
                     "❌ Ошибка: вопрос не найден в списке",
                     reply_markup=ReplyKeyboardRemove()
                 )
                 return ConversationHandler.END
-        
+                
+        logger.data_processing("вопросы", "Редактирование текста вопроса", 
+                          details={"старый_текст": old_question, "новый_текст": new_text, "user_id": user_id})
+                
         # Редактируем текст вопроса
         success = self.sheets.edit_question_text(question_num, new_text)
         
@@ -251,6 +277,8 @@ class EditHandler(BaseHandler):
             
             # Проверяем, что вопрос был обновлен
             if new_text in self.questions:
+                logger.admin_action(user_id, "Обновление текста вопроса", 
+                               details={"статус": "успешно", "старый": old_question, "новый": new_text})
                 await update.message.reply_text(
                     f"✅ Текст вопроса успешно обновлен:\n"
                     f"Было: {old_question}\n"
@@ -258,17 +286,21 @@ class EditHandler(BaseHandler):
                     reply_markup=ReplyKeyboardRemove()
                 )
             else:
+                logger.admin_action(user_id, "Обновление текста вопроса", 
+                               details={"статус": "требуется перезагрузка", "старый": old_question, "новый": new_text})
                 await update.message.reply_text(
                     "✅ Текст вопроса обновлен, но требуется перезагрузка бота для обновления списка вопросов.",
                     reply_markup=ReplyKeyboardRemove()
                 )
         else:
+            logger.error("question_update_failed", "Не удалось обновить текст вопроса", 
+                      user_id=user_id, details={"вопрос": old_question, "новый_текст": new_text})
             await update.message.reply_text(
                 "❌ Не удалось обновить текст вопроса",
                 reply_markup=ReplyKeyboardRemove()
             )
         
-        # Очищаем данные редактирования
+        # Очищаем данные пользователя
         context.user_data.pop('editing_question', None)
         context.user_data.pop('editing_question_num', None)
         
@@ -279,7 +311,8 @@ class EditHandler(BaseHandler):
     async def handle_options_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка редактирования вариантов ответов"""
         choice = update.message.text
-        logger.info(f"Выбрано действие с вариантами: {choice}")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Выбор действия с вариантами ответов", details={"действие": choice})
         
         # Проверяем наличие необходимых данных
         if 'editing_question' not in context.user_data:
@@ -382,7 +415,8 @@ class EditHandler(BaseHandler):
             
             # Проверяем, что вопрос существует в актуальном списке
             if question not in self.questions_with_options:
-                logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+                logger.warning("question_not_found", "Вопрос не найден в актуальном списке вопросов", 
+                            details={"вопрос": question, "user_id": update.effective_user.id})
                 await update.message.reply_text(
                     "❌ Ошибка: вопрос не найден в актуальном списке",
                     reply_markup=ReplyKeyboardRemove()
@@ -427,7 +461,8 @@ class EditHandler(BaseHandler):
             if question in self.questions_with_options:
                 current_options = self.questions_with_options[question]
             else:
-                logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+                logger.warning("question_not_found", "Вопрос не найден в списке", 
+                            details={"вопрос": question, "user_id": update.effective_user.id})
                 await update.message.reply_text(
                     "❌ Ошибка: вопрос не найден в актуальном списке",
                     reply_markup=ReplyKeyboardRemove()
@@ -439,7 +474,8 @@ class EditHandler(BaseHandler):
             # Добавляем новый вариант к существующим
             new_options = current_options + [new_option]
             
-            logger.info(f"Добавление варианта '{choice}' к существующим вариантам: {current_options}")
+            logger.admin_action(update.effective_user.id, "Добавление варианта ответа", 
+                             details={"вариант": choice, "текущие_варианты": str(current_options)})
             
             success = self.sheets.edit_question_options(question_num, new_options)
             
@@ -487,7 +523,8 @@ class EditHandler(BaseHandler):
             if question in self.questions_with_options:
                 current_options = self.questions_with_options[question]
             else:
-                logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+                logger.warning("question_not_found", "Вопрос не найден в списке", 
+                            details={"вопрос": question, "user_id": update.effective_user.id})
                 await update.message.reply_text(
                     "❌ Ошибка: вопрос не найден в актуальном списке",
                     reply_markup=ReplyKeyboardRemove()
@@ -584,10 +621,12 @@ class EditHandler(BaseHandler):
     async def handle_sub_options_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка редактирования вложенных вариантов ответов"""
         choice = update.message.text
-        logger.info(f"Выбрано действие для вложенных вариантов: {choice}")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Выбор действия для вложенных вариантов", details={"выбор": choice})
         
         if 'editing_question' not in context.user_data or 'editing_option' not in context.user_data:
-            logger.error("Ошибка: editing_question или editing_option отсутствуют в context.user_data")
+            logger.error("editing_context_missing", "Отсутствует контекст редактирования", 
+                       user_id=user_id, details={"context_keys": str(context.user_data.keys())})
             await update.message.reply_text(
                 "❌ Ошибка: вопрос или вариант не выбраны",
                 reply_markup=ReplyKeyboardRemove()
@@ -599,25 +638,26 @@ class EditHandler(BaseHandler):
         
         # Получаем номер вопроса
         question_num = context.user_data.get('editing_question_num', -1)
-        logger.info(f"Редактирование вложенных вариантов для вопроса '{question}', вариант '{parent_option_text}', индекс вопроса {question_num}")
+        logger.data_processing("варианты", "Редактирование вложенных вариантов", 
+                          details={"вопрос": question, "вариант": parent_option_text, 
+                                 "индекс_вопроса": question_num, "user_id": user_id})
         
         # Получаем актуальные данные перед изменением
         self.questions_with_options = self.sheets.get_questions_with_options()
         self.questions = list(self.questions_with_options.keys())
         
         # Проверяем, что вопрос существует
-        if question in self.questions_with_options:
-            current_options = self.questions_with_options[question]
-        else:
-            logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+        if question not in self.questions_with_options:
+            logger.warning("question_not_found", "Вопрос не найден в актуальном списке вопросов", 
+                        details={"вопрос": question, "user_id": update.effective_user.id})
             await update.message.reply_text(
                 "❌ Ошибка: вопрос не найден в актуальном списке",
                 reply_markup=ReplyKeyboardRemove()
             )
-            # Очищаем состояние
-            context.user_data.pop('editing_option', None)
             return ConversationHandler.END
             
+        current_options = self.questions_with_options[question]
+        
         # Добавление нового вложенного варианта
         if choice == "➕ Добавить вложенный вариант" or choice == "✅ Да, добавить вложенные варианты" or choice == "➕ Добавить еще вложенный вариант":
             await update.message.reply_text(
@@ -887,7 +927,8 @@ class EditHandler(BaseHandler):
     async def handle_add_sub_option(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка добавления вложенного варианта ответа"""
         new_sub_option = update.message.text
-        logger.info(f"Получен новый вложенный вариант: {new_sub_option}")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Добавление вложенного варианта", details={"вариант": new_sub_option})
         
         # Обработка кнопки "Готово"
         if new_sub_option == "✅ Готово":
@@ -1046,7 +1087,8 @@ class EditHandler(BaseHandler):
     async def handle_remove_sub_option(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка удаления вложенного варианта ответа"""
         choice = update.message.text
-        logger.info(f"Выбран вложенный вариант для удаления: {choice}")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Выбор вложенного варианта для удаления", details={"вариант": choice})
         
         if choice == "❌ Отмена":
             await update.message.reply_text(
@@ -1074,6 +1116,9 @@ class EditHandler(BaseHandler):
         
         # Проверяем, что вопрос все еще существует
         if question not in self.questions_with_options:
+            logger.warning("question_not_found", "Вопрос не найден в актуальном списке вопросов", 
+                         details={"вопрос": question, "user_id": update.effective_user.id,
+                                 "действие": "Прерывание удаления вопроса"})
             await update.message.reply_text(
                 f"❌ Ошибка: вопрос '{question}' не найден в базе данных",
                 reply_markup=ReplyKeyboardRemove()
@@ -1086,8 +1131,8 @@ class EditHandler(BaseHandler):
             
         current_options = self.questions_with_options[question]
         
-        logger.info(f"Текущие варианты в handle_remove_sub_option: {current_options}")
-        logger.info(f"Индекс родительского варианта: {parent_option_index}")
+        logger.data_processing("варианты", "Анализ вариантов ответов", details={"user_id": user_id})
+        
         
         # Проверяем, что индекс в допустимом диапазоне
         if parent_option_index < 0 or parent_option_index >= len(current_options):
@@ -1157,10 +1202,12 @@ class EditHandler(BaseHandler):
     async def handle_add_free_text_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка добавления вопроса для свободного ответа"""
         prompt = update.message.text
-        logger.info(f"Получен вопрос для свободного ответа: {prompt}")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Добавление вопроса для свободного ответа", details={"текст_вопроса": prompt})
         
         if 'editing_question' not in context.user_data or 'editing_option' not in context.user_data:
-            logger.error("Ошибка: editing_question или editing_option отсутствуют в context.user_data")
+            logger.error("editing_context_missing", "Отсутствует контекст редактирования", 
+                       user_id=user_id, details={"handler": "handle_add_free_text_prompt"})
             await update.message.reply_text(
                 "❌ Ошибка: вопрос или вариант не выбраны",
                 reply_markup=ReplyKeyboardRemove()
@@ -1173,7 +1220,7 @@ class EditHandler(BaseHandler):
         
         # Получаем номер вопроса
         question_num = context.user_data.get('editing_question_num', -1)
-        logger.info(f"Добавление вопроса для свободного ответа. Вопрос: '{question}', вариант: '{parent_option_text}', индекс вопроса: {question_num}")
+        logger.data_processing("вопросы", "Добавление вопроса для свободного ответа", details={"user_id": user_id})
         
         # Получаем актуальные данные перед изменением
         self.questions_with_options = self.sheets.get_questions_with_options()
@@ -1181,7 +1228,7 @@ class EditHandler(BaseHandler):
         
         # Проверяем, что вопрос существует
         if question not in self.questions_with_options:
-            logger.warning(f"Вопрос '{question}' не найден в актуальном списке вопросов")
+            logger.warning("question_not_found", "Вопрос не найден в актуальном списке вопросов", details={"вопрос": question, "user_id": update.effective_user.id})
             await update.message.reply_text(
                 "❌ Ошибка: вопрос не найден в актуальном списке",
                 reply_markup=ReplyKeyboardRemove()
@@ -1195,7 +1242,7 @@ class EditHandler(BaseHandler):
         for i, opt in enumerate(current_options):
             if isinstance(opt, dict) and "text" in opt and opt["text"] == parent_option_text:
                 parent_option_index = i
-                context.user_data['editing_option_index'] = i
+                context.user_data['editing_option_index']
                 parent_found = True
                 break
                 
@@ -1248,7 +1295,8 @@ class EditHandler(BaseHandler):
 
     async def delete_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало удаления вопроса"""
-        logger.info(f"Пользователь {update.effective_user.id} начал удаление вопроса")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Удаление вопроса", "Начало процесса")
         
         # Очищаем данные пользователя
         context.user_data.clear()
@@ -1282,7 +1330,8 @@ class EditHandler(BaseHandler):
     async def handle_question_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка удаления вопроса"""
         choice = update.message.text
-        logger.info(f"Получен выбор для удаления: {choice}")
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Удаление вопроса", "Выбор вопроса", details={"выбор": choice})
         
         if choice == "❌ Отмена":
             await update.message.reply_text(
@@ -1301,14 +1350,14 @@ class EditHandler(BaseHandler):
                 # Если формат не соответствует ожидаемому, попробуем преобразовать всё как число
                 question_num = int(choice) - 1
                 
-            logger.info(f"Полученный номер вопроса: {question_num}")
+            logger.data_processing("вопросы", "Обработка выбора вопроса для удаления", details={"user_id": user_id})
             
             if 0 <= question_num < len(self.questions):
                 question_to_delete = self.questions[question_num]
                 
                 # Запоминаем количество вопросов до удаления
                 old_questions = self.questions.copy()
-                logger.info(f"Вопросов до удаления: {len(old_questions)}")
+                logger.data_processing("вопросы", "Удаление вопроса", details={"начало": True, "вопрос": question_to_delete})
                 
                 # Удаляем вопрос
                 success = self.sheets.delete_question(question_num)
@@ -1317,7 +1366,7 @@ class EditHandler(BaseHandler):
                     # Сразу обновляем локальные списки вопросов
                     self.questions_with_options = self.sheets.get_questions_with_options()
                     self.questions = list(self.questions_with_options.keys())
-                    logger.info(f"Вопросов после удаления: {len(self.questions)}")
+                    logger.data_processing("вопросы", "Удаление вопроса", details={"успех": True, "вопрос": question_to_delete})
                     
                     # Обновляем списки вопросов во всех обработчиках через AdminHandler
                     await self._update_handlers_questions(update)
@@ -1328,12 +1377,15 @@ class EditHandler(BaseHandler):
                         for group_idx, group in enumerate(self.application.handlers):
                             # Проверяем, что group является итерируемым объектом
                             if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
-                                logger.warning(f"Группа с индексом {group_idx} не является списком: {type(group)}")
+                                logger.warning("invalid_handler_group", "Группа обработчиков не является списком", 
+                                          details={"индекс": group_idx, "тип": str(type(group))})
                                 continue
                             
                             for handler in group:
                                 if isinstance(handler, ConversationHandler) and hasattr(handler, 'name'):
-                                    logger.info(f"Найден обработчик: {handler.name}")
+                                    logger.data_processing("Обновление обработчиков", "Найден обработчик", 
+                                                       details={"имя_обработчика": handler.name,
+                                                              "user_id": update.effective_user.id})
                                     if hasattr(handler, 'entry_points'):
                                         for entry_point in handler.entry_points:
                                             if hasattr(entry_point.callback, '__self__'):
@@ -1344,7 +1396,13 @@ class EditHandler(BaseHandler):
                                                     handler_instance.questions_with_options = self.sheets.get_questions_with_options()
                                                     handler_instance.questions = list(handler_instance.questions_with_options.keys())
                                                     new_len = len(handler_instance.questions)
-                                                    logger.info(f"Принудительно обновлены списки вопросов в {handler_instance.__class__.__name__} (группа {group_idx}). Было: {old_len}, стало: {new_len}")
+                                                    
+                                                    logger.data_processing("Обновление обработчиков", "Принудительное обновление", 
+                                                                      details={"обработчик": handler_instance.__class__.__name__,
+                                                                             "группа": group_idx,
+                                                                             "вопросов_было": old_len,
+                                                                             "вопросов_стало": new_len,
+                                                                             "user_id": update.effective_user.id})
                     
                     await update.message.reply_text(
                         f"✅ Вопрос успешно удален:\n{question_to_delete}",
@@ -1352,7 +1410,10 @@ class EditHandler(BaseHandler):
                     )
                     
                     # Дополнительная проверка, что список вопросов обновлен и во всех обработчиках
-                    logger.info(f"Проверка успешного обновления списков вопросов после удаления")
+                    logger.data_processing("Обновление обработчиков", "Проверка синхронизации", 
+                                        details={"операция": "Удаление вопроса", 
+                                               "вопрос": question_to_delete,
+                                               "user_id": update.effective_user.id})
                     for group_idx, group in enumerate(self.application.handlers):
                         # Проверяем, что group является итерируемым объектом
                         if not isinstance(group, (list, tuple)) or isinstance(group, (str, bytes, int)):
@@ -1362,15 +1423,21 @@ class EditHandler(BaseHandler):
                             if isinstance(handler, CommandHandler) and hasattr(handler.callback, '__name__') and handler.callback.__name__ == "list_questions":
                                 list_questions_handler = handler.callback.__self__
                                 if hasattr(list_questions_handler, 'questions'):
-                                    logger.info(f"После удаления в list_questions: {len(list_questions_handler.questions)} вопросов")
+                                    logger.data_processing("Синхронизация обработчиков", "Состояние list_questions", 
+                                                       details={"количество_вопросов": len(list_questions_handler.questions),
+                                                              "обработчик": "list_questions_handler", 
+                                                              "user_id": update.effective_user.id})
                     
-                    logger.info(f"Удаление вопроса успешно завершено. Осталось вопросов: {len(self.questions)}")
+                    logger.admin_action(update.effective_user.id, "Удаление вопроса", "Завершено", 
+                                     details={"вопрос": question_to_delete, 
+                                            "осталось_вопросов": len(self.questions)})
                 else:
                     await update.message.reply_text(
                         "❌ Не удалось удалить вопрос. Пожалуйста, попробуйте позже.",
                         reply_markup=ReplyKeyboardRemove()
                     )
-                    logger.error(f"Не удалось удалить вопрос с номером {question_num}")
+                    logger.error("question_delete_failed", "Не удалось удалить вопрос", 
+                                details={"номер_вопроса": question_num, "user_id": update.effective_user.id})
                 
                 return ConversationHandler.END
             else:
@@ -1378,31 +1445,40 @@ class EditHandler(BaseHandler):
                     "❌ Некорректный номер вопроса. Пожалуйста, выберите из списка.",
                     reply_markup=ReplyKeyboardRemove()
                 )
-                logger.error(f"Некорректный номер вопроса: {question_num}")
+                logger.error("invalid_question_number", "Некорректный номер вопроса", 
+                            details={"номер_вопроса": question_num, "user_id": update.effective_user.id})
                 return ConversationHandler.END
         except ValueError as e:
             await update.message.reply_text(
                 "❌ Не удалось распознать номер вопроса. Пожалуйста, выберите вопрос из списка.",
                 reply_markup=ReplyKeyboardRemove()
             )
-            logger.error(f"Не удалось преобразовать выбор в число: {choice}. Ошибка: {e}")
+            logger.error("value_conversion_error", "Не удалось преобразовать выбор в число", 
+                        details={"текст": choice, "ошибка": str(e), "user_id": update.effective_user.id})
             return ConversationHandler.END
 
     async def _update_handlers_questions(self, update: Update):
         """Вызывает обновление списков вопросов в других обработчиках через AdminHandler"""
         try:
             if not self.application:
-                logger.error("Application не найден для обновления обработчиков")
+                logger.error("application_missing", "Application не найден для обновления обработчиков", 
+                            details={"причина": "Компонент не был передан при инициализации"})
                 return
 
             # Обновляем свои списки вопросов
             old_questions_count = len(self.questions)
-            logger.info(f"Начинаем обновление списков вопросов в обработчиках. Текущее количество: {old_questions_count}")
+            logger.data_processing("Обновление обработчиков", "Начало обновления списков вопросов", 
+                                details={"текущее_количество": old_questions_count,
+                                       "user_id": update.effective_user.id if update else "system"})
             
             # Получаем обновленные списки вопросов
             self.questions_with_options = self.sheets.get_questions_with_options()
             self.questions = list(self.questions_with_options.keys())
-            logger.info(f"Локальный список вопросов обновлен в EditHandler. Было: {old_questions_count}, стало: {len(self.questions)}")
+            logger.data_processing("Обновление обработчиков", "Локальное обновление", 
+                                details={"модуль": "EditHandler", 
+                                       "вопросов_было": old_questions_count, 
+                                       "вопросов_стало": len(self.questions),
+                                       "user_id": update.effective_user.id if update else "system"})
             
             # Флаг для отслеживания обновления list_questions
             list_questions_handler_updated = False
@@ -1419,7 +1495,9 @@ class EditHandler(BaseHandler):
                         handler_instance = handler.callback.__self__
                         if handler_instance.__class__.__name__ == "AdminHandler":
                             admin_handler = handler_instance
-                            logger.info(f"Найден AdminHandler в обработчике {handler}")
+                            logger.data_processing("Обновление обработчиков", "Найден AdminHandler", 
+                                               details={"обработчик": str(handler),
+                                                      "user_id": update.effective_user.id if update else "system"})
                             break
                     
                     # Ищем ConversationHandler с именем add_question_conversation
@@ -1429,7 +1507,9 @@ class EditHandler(BaseHandler):
                                 handler_instance = entry_point.callback.__self__
                                 if handler_instance.__class__.__name__ == "AdminHandler":
                                     admin_handler = handler_instance
-                                    logger.info(f"Найден AdminHandler через ConversationHandler")
+                                    logger.data_processing("Обновление обработчиков", "Найден AdminHandler", 
+                                                       details={"через": "ConversationHandler",
+                                                              "user_id": update.effective_user.id if update else "system"})
                                     break
                     
                     # Ищем CommandHandler для команды list_questions
@@ -1439,7 +1519,7 @@ class EditHandler(BaseHandler):
                             old_len = len(list_questions_handler.questions)
                             list_questions_handler.questions_with_options = self.sheets.get_questions_with_options()
                             list_questions_handler.questions = list(list_questions_handler.questions_with_options.keys())
-                            logger.info(f"Обновлен список вопросов для команды list_questions. Было: {old_len}, стало: {len(list_questions_handler.questions)}")
+                            
                             list_questions_handler_updated = True
                 
                 if admin_handler:
@@ -1447,13 +1527,19 @@ class EditHandler(BaseHandler):
             
             # Вызываем обновление списков вопросов в обработчиках через AdminHandler
             if admin_handler and hasattr(admin_handler, '_update_handlers_questions'):
-                logger.info(f"Вызываем _update_handlers_questions в AdminHandler")
+                logger.data_processing("Обновление обработчиков", "Делегирование AdminHandler", 
+                                    details={"метод": "_update_handlers_questions",
+                                           "user_id": update.effective_user.id if update else "system"})
                 await admin_handler._update_handlers_questions(update)
-                logger.info(f"Списки вопросов успешно обновлены через AdminHandler")
+                logger.data_processing("Обновление обработчиков", "Завершено через AdminHandler",
+                                    details={"статус": "успешно",
+                                           "user_id": update.effective_user.id if update else "system"})
                 return
                 
             # Если AdminHandler не найден, выполняем принудительное обновление
-            logger.warning(f"AdminHandler не найден, выполняем принудительное обновление обработчиков")
+            logger.warning("admin_handler_missing", "AdminHandler не найден", 
+                         details={"действие": "Выполняем принудительное обновление обработчиков",
+                                 "причина": "Компонент недоступен"})
             
             # Обновляем все обработчики напрямую
             updated_handlers = 0
@@ -1471,7 +1557,10 @@ class EditHandler(BaseHandler):
                             old_len = len(list_questions_handler.questions)
                             list_questions_handler.questions_with_options = self.sheets.get_questions_with_options()
                             list_questions_handler.questions = list(list_questions_handler.questions_with_options.keys())
-                            logger.info(f"Обновлен список вопросов для команды list_questions. Было: {old_len}, стало: {len(list_questions_handler.questions)}")
+                            logger.data_processing("Обновление обработчиков", "Обновление list_questions", 
+                                                details={"вопросов_было": old_len, 
+                                                       "вопросов_стало": len(list_questions_handler.questions),
+                                                       "user_id": update.effective_user.id if update else "system"})
                             list_questions_handler_updated = True
                             handler_updated = True
                             updated_handlers += 1
@@ -1486,7 +1575,7 @@ class EditHandler(BaseHandler):
                                     handler_instance.questions_with_options = self.sheets.get_questions_with_options()
                                     handler_instance.questions = list(handler_instance.questions_with_options.keys())
                                     new_len = len(handler_instance.questions)
-                                    logger.info(f"Обновлены списки вопросов в {handler_instance.__class__.__name__}. Было: {old_len}, стало: {new_len}")
+                                    
                                     handler_updated = True
                                     updated_handlers += 1
                     
@@ -1499,19 +1588,28 @@ class EditHandler(BaseHandler):
                             handler_instance.questions = list(handler_instance.questions_with_options.keys())
                             new_len = len(handler_instance.questions)
                             if not handler_updated:  # Избегаем повторного логирования
-                                logger.info(f"Обновлены списки вопросов в {handler_instance.__class__.__name__}. Было: {old_len}, стало: {new_len}")
+                                logger.data_processing("Обновление обработчиков", "Обновление списков вопросов", 
+                                                    details={"обработчик": handler_instance.__class__.__name__,
+                                                           "вопросов_было": old_len,
+                                                           "вопросов_стало": new_len,
+                                                           "user_id": update.effective_user.id if update else "system"})
                                 updated_handlers += 1
             
             if updated_handlers > 0:
-                logger.info(f"Успешно обновлены списки вопросов в {updated_handlers} обработчиках")
+                logger.admin_action(update.effective_user.id, "Обновление обработчиков", 
+                                  details={"успешно_обновлено": updated_handlers})
             else:
-                logger.warning("Не найдено обработчиков для обновления")
+                logger.warning("handlers_update_empty", "Не найдено обработчиков для обновления", 
+                             details={"причина": "Обработчики не зарегистрированы или недоступны"})
                 
             # Проверяем, был ли обновлен обработчик list_questions
             if not list_questions_handler_updated:
-                logger.warning("Обработчик команды list_questions не был найден или не обновлен")
+                logger.warning("list_questions_not_updated", "Обработчик команды list_questions не обновлен", 
+                             details={"причина": "Обработчик не найден или не привязан к приложению"})
                 
-            logger.info(f"Процесс обновления списков вопросов в обработчиках завершен успешно")
+            logger.admin_action(update.effective_user.id, "Завершение обновления обработчиков", 
+                              details={"успешно": True, "количество": updated_handlers})
         except Exception as e:
-            logger.error(f"Ошибка при обновлении списков вопросов: {e}")
+            logger.error("questions_update_error", "Ошибка при обновлении списков вопросов", 
+                        details={"ошибка": str(e), "user_id": update.effective_user.id if update else "unknown"})
             logger.exception(e)

@@ -2,19 +2,21 @@
 Вспомогательные функции для бота
 """
 
-import logging
+from utils.logger import get_logger
 from telegram import BotCommand, BotCommandScopeChat
 from telegram.ext import Application
 from telegram.error import BadRequest
+import asyncio
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
+# Инициализация логгера
+logger = get_logger()
 
-async def setup_commands(application: Application, admin_ids: list):
-    """Настройка команд бота с разделением на админские и обычные"""
-    logger.info(f"Настройка команд для админов: {admin_ids}")
+async def _async_setup_commands(application: Application, admin_ids: list):
+    """Асинхронная реализация настройки команд бота"""
+    logger.init("bot_commands", f"Настройка команд для админов: {admin_ids}")
     if not admin_ids:
-        logger.warning("Список админов пуст!")
+        logger.warning("empty_admins_list", "Список администраторов пуст", 
+                     details={"причина": "Не найдены записи администраторов", "действие": "Продолжаем настройку базовых команд"})
     
     # Базовые команды для всех пользователей
     basic_commands = [
@@ -81,7 +83,7 @@ async def setup_commands(application: Application, admin_ids: list):
         await application.bot.set_my_commands(
             commands=basic_commands
         )
-        logger.info("Установлены базовые команды")
+        logger.init("bot_commands", "Установлены базовые команды")
         
         # Устанавливаем расширенный список команд для каждого админа
         for admin_id in admin_ids:
@@ -98,18 +100,41 @@ async def setup_commands(application: Application, admin_ids: list):
                             commands=admin_commands,
                             scope=chat_scope
                         )
-                        logger.info(f"Установлены админские команды для {admin_id}")
+                        logger.admin_action(int(admin_id), "Установка команд", "Установлены админские команды")
                 except BadRequest as e:
                     if "Chat not found" in str(e):
-                        logger.warning(f"Чат с админом {admin_id} не найден. Команды будут установлены после первого взаимодействия с ботом.")
+                        logger.warning("admin_chat_not_found", f"Чат с админом не найден", details={"admin_id": admin_id, "message": "Команды будут установлены после первого взаимодействия с ботом"})
                     else:
                         raise
                         
             except Exception as e:
-                logger.error(f"Ошибка при установке команд для админа {admin_id}: {e}")
+                logger.error("setup_commands_admin", exception=e, details={"admin_id": admin_id})
                 
     except Exception as e:
-        logger.error(f"Общая ошибка при установке команд: {e}")
+        logger.error("setup_commands", exception=e, details={"admin_ids": admin_ids})
+
+def setup_commands(application: Application, admin_ids: list):
+    """
+    Настройка команд бота с разделением на админские и обычные.
+    Эта функция может быть вызвана как в синхронном, так и в асинхронном коде.
+    """
+    try:
+        # Получаем текущий цикл событий, если он существует
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Если цикл уже работает (мы в асинхронном контексте), создаем задачу
+            asyncio.create_task(_async_setup_commands(application, admin_ids))
+        else:
+            # Иначе запускаем новый цикл для выполнения функции
+            asyncio.run(_async_setup_commands(application, admin_ids))
+    except RuntimeError:
+        # Если не можем получить цикл событий, запускаем новый
+        asyncio.run(_async_setup_commands(application, admin_ids))
+
+# Оригинальная асинхронная функция сохранена для обратной совместимости
+async def setup_commands_async(application: Application, admin_ids: list):
+    """Настройка команд бота с разделением на админские и обычные (асинхронная версия)"""
+    await _async_setup_commands(application, admin_ids)
 
 def is_admin(user_id: int, admin_ids: list) -> bool:
     """Проверка, является ли пользователь администратором"""
