@@ -142,7 +142,7 @@ class EditHandler(BaseHandler):
             return ConversationHandler.END
             
         question = context.user_data['editing_question']
-        logger.data_processing("Редактирование вопроса", details={"вопрос": question})
+        logger.data_processing("вопросы", "Выбор действия редактирования", details={"вопрос": question})
         
         # Получаем номер вопроса, если он есть
         question_num = context.user_data.get('editing_question_num')
@@ -159,7 +159,7 @@ class EditHandler(BaseHandler):
         
         # Проверяем наличие вариантов ответов
         has_options = bool(self.questions_with_options[question])
-        logger.data_processing("Проверка вариантов ответов", details={"наличие_вариантов": has_options, "вопрос": question})
+        logger.data_processing("вопросы", "Проверка вариантов ответов", details={"наличие_вариантов": has_options, "вопрос": question})
         
         if choice == "✏️ Изменить текст вопроса":
             logger.admin_action(user_id, "Выбор изменения текста вопроса", details={"вопрос": question})
