@@ -244,6 +244,15 @@ def create_edit_handlers(edit_handler: EditHandler, admin_ids: list) -> list:
             ],
             REMOVING_SUB_OPTION: [
                 TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_remove_sub_option)
+            ],
+            ADDING_FREE_TEXT_PROMPT: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_add_free_text_prompt)
+            ],
+            SELECTING_OPTION_TO_EDIT: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_option_text_edit)
+            ],
+            EDITING_OPTION_TEXT: [
+                TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, edit_handler.handle_option_text_update)
             ]
         },
         fallbacks=[

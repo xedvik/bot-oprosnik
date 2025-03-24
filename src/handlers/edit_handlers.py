@@ -176,6 +176,7 @@ class EditHandler(BaseHandler):
             # Создаем улучшенную клавиатуру для редактирования вариантов
             keyboard = [
                 [KeyboardButton("➕ Добавить вариант")],
+                [KeyboardButton("✏️ Изменить вариант")],
                 [KeyboardButton("➕ Добавить вложенные варианты")],
                 [KeyboardButton("➖ Удалить вариант")],
                 [KeyboardButton("✨ Сделать свободным")],
@@ -382,6 +383,33 @@ class EditHandler(BaseHandler):
             context.user_data['selecting_parent_option'] = True
             return EDITING_SUB_OPTIONS
         
+        elif choice == "✏️ Изменить вариант":
+            # Проверяем, есть ли варианты ответов для редактирования
+            if not current_options:
+                await update.message.reply_text(
+                    "❌ У этого вопроса нет вариантов ответов для редактирования",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+            
+            # Создаем клавиатуру с вариантами для редактирования
+            keyboard = []
+            for opt in current_options:
+                if isinstance(opt, dict) and "text" in opt:
+                    keyboard.append([KeyboardButton(opt["text"])])
+                else:
+                    keyboard.append([KeyboardButton(str(opt))])
+            keyboard.append([KeyboardButton("❌ Отмена")])
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                "Выберите вариант для редактирования:",
+                reply_markup=reply_markup
+            )
+            # Сохраняем состояние
+            context.user_data['editing_option_text'] = True
+            return SELECTING_OPTION_TO_EDIT
+            
         elif choice == "➖ Удалить вариант":
             if not current_options:
                 await update.message.reply_text(
@@ -582,6 +610,7 @@ class EditHandler(BaseHandler):
             # Создаем обновленную клавиатуру для редактирования вариантов с новыми возможностями
             keyboard = [
                 [KeyboardButton("➕ Добавить вариант")],
+                [KeyboardButton("✏️ Изменить вариант")],
                 [KeyboardButton("➕ Добавить вложенные варианты")],
                 [KeyboardButton("➖ Удалить вариант")],
                 [KeyboardButton("✨ Сделать свободным")],
@@ -1613,3 +1642,177 @@ class EditHandler(BaseHandler):
             logger.error("questions_update_error", "Ошибка при обновлении списков вопросов", 
                         details={"ошибка": str(e), "user_id": update.effective_user.id if update else "unknown"})
             logger.exception(e)
+
+    async def handle_option_text_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора варианта для редактирования текста"""
+        choice = update.message.text
+        user_id = update.effective_user.id
+        
+        # Проверяем отмену
+        if choice == "❌ Отмена":
+            await update.message.reply_text(
+                "❌ Редактирование варианта отменено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data.pop('editing_option_text', None)
+            return ConversationHandler.END
+        
+        logger.admin_action(user_id, "Выбор варианта для редактирования", details={"вариант": choice})
+        
+        # Получаем вопрос и его варианты
+        if 'editing_question' not in context.user_data:
+            await update.message.reply_text(
+                "❌ Ошибка: вопрос не выбран",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        question = context.user_data['editing_question']
+        question_num = context.user_data.get('editing_question_num', -1)
+        
+        # Обновляем данные из базы
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
+        
+        # Проверяем, что вопрос существует
+        if question not in self.questions_with_options:
+            await update.message.reply_text(
+                "❌ Ошибка: вопрос не найден в актуальном списке",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+            
+        current_options = self.questions_with_options[question]
+        
+        # Находим выбранный вариант
+        selected_option = None
+        selected_index = -1
+        
+        for i, opt in enumerate(current_options):
+            if isinstance(opt, dict) and "text" in opt and opt["text"] == choice:
+                selected_option = opt
+                selected_index = i
+                break
+                
+        if selected_option is None:
+            await update.message.reply_text(
+                f"❌ Вариант '{choice}' не найден в списке",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+            
+        # Сохраняем выбранный вариант и его индекс
+        context.user_data['selected_option'] = selected_option
+        context.user_data['selected_option_index'] = selected_index
+        context.user_data['old_option_text'] = choice
+        
+        # Запрашиваем новый текст для варианта
+        await update.message.reply_text(
+            f"Редактирование варианта: {choice}\n\n"
+            f"Введите новый текст для этого варианта:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        return EDITING_OPTION_TEXT
+        
+    async def handle_option_text_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка ввода нового текста для варианта ответа"""
+        new_text = update.message.text.strip()
+        user_id = update.effective_user.id
+        
+        logger.admin_action(user_id, "Редактирование текста варианта", details={"новый_текст": new_text})
+        
+        # Получаем необходимые данные из контекста
+        if 'editing_question' not in context.user_data or 'selected_option_index' not in context.user_data:
+            await update.message.reply_text(
+                "❌ Ошибка: не найдены данные о редактируемом варианте",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+            
+        question = context.user_data['editing_question']
+        question_num = context.user_data.get('editing_question_num', -1)
+        old_text = context.user_data.get('old_option_text', '')
+        selected_index = context.user_data['selected_option_index']
+        
+        # Обновляем данные из базы
+        self.questions_with_options = self.sheets.get_questions_with_options()
+        self.questions = list(self.questions_with_options.keys())
+        
+        # Проверяем, что вопрос существует
+        if question not in self.questions_with_options:
+            await update.message.reply_text(
+                "❌ Ошибка: вопрос не найден в актуальном списке",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем контекст
+            context.user_data.pop('selected_option', None)
+            context.user_data.pop('selected_option_index', None)
+            context.user_data.pop('old_option_text', None)
+            return ConversationHandler.END
+            
+        current_options = self.questions_with_options[question]
+        
+        # Проверяем валидность индекса
+        if selected_index < 0 or selected_index >= len(current_options):
+            await update.message.reply_text(
+                "❌ Ошибка: индекс варианта вне диапазона",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем контекст
+            context.user_data.pop('selected_option', None)
+            context.user_data.pop('selected_option_index', None)
+            context.user_data.pop('old_option_text', None)
+            return ConversationHandler.END
+            
+        # Получаем выбранный вариант
+        selected_option = current_options[selected_index]
+        
+        # Проверяем, что это словарь с полем text
+        if not isinstance(selected_option, dict) or "text" not in selected_option:
+            await update.message.reply_text(
+                "❌ Ошибка: некорректный формат варианта",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # Очищаем контекст
+            context.user_data.pop('selected_option', None)
+            context.user_data.pop('selected_option_index', None)
+            context.user_data.pop('old_option_text', None)
+            return ConversationHandler.END
+            
+        # Сохраняем старый текст для лога
+        old_text = selected_option["text"]
+        
+        # Обновляем текст варианта
+        selected_option["text"] = new_text
+        
+        # Сохраняем обновленные варианты
+        success = self.sheets.edit_question_options(question_num, current_options)
+        
+        if success:
+            # Обновляем список вопросов
+            self.questions_with_options = self.sheets.get_questions_with_options()
+            self.questions = list(self.questions_with_options.keys())
+            
+            await update.message.reply_text(
+                f"✅ Текст варианта успешно обновлен\n"
+                f"Было: {old_text}\n"
+                f"Стало: {new_text}",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+            # Обновляем списки вопросов в других обработчиках
+            await self._update_handlers_questions(update)
+        else:
+            await update.message.reply_text(
+                "❌ Не удалось обновить текст варианта",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        # Очищаем контекст
+        context.user_data.pop('selected_option', None)
+        context.user_data.pop('selected_option_index', None)
+        context.user_data.pop('old_option_text', None)
+        context.user_data.pop('editing_option_text', None)
+        
+        return ConversationHandler.END
