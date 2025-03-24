@@ -118,7 +118,11 @@ class BaseHandler:
         
         # Форматируем сообщение (замена плейсхолдеров и обработка Markdown)
         message_text = message_data.get("text", "Спасибо за регистрацию!")
-        formatted_message = message_text.replace("{{username}}", user.username or "")
+        
+        # Заменяем плейсхолдеры для имени пользователя в разных форматах
+        username = user.first_name or user.username or ""
+        formatted_message = message_text.replace("{{username}}", username)
+        formatted_message = formatted_message.replace("{username}", username)
         
         # Определяем клавиатуру для завершения
         reply_markup = ReplyKeyboardRemove()
