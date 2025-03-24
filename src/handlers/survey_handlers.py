@@ -12,6 +12,7 @@ from models.states import *
 from handlers.base_handler import BaseHandler
 from config import QUESTIONS_SHEET  # Добавляем импорт для доступа к имени листа вопросов
 from utils.logger import get_logger
+from utils.sheets_cache import sheets_cache
 
 # Настройка логирования
 logger = get_logger()
@@ -361,40 +362,45 @@ class SurveyHandler(BaseHandler):
                                details={"действие": "начало сохранения"})
                 start_time = datetime.now()
                 
-                # Сохраняем ответы с ID пользователя
-                success = self.sheets.save_answers(context.user_data['answers'], user_id)
-                
-                if success:
-                    save_duration = (datetime.now() - start_time).total_seconds()
-                    logger.data_processing("ответы", "Сохранение ответов", 
-                                      details={"user_id": user_id, "количество": len(context.user_data['answers']), "длительность": f"{save_duration:.2f} сек"})
+                # Асинхронно сохраняем ответы с ID пользователя
+                try:
+                    success = await self.sheets.async_save_answers(context.user_data['answers'], user_id)
                     
-                    # Отправляем сообщение о завершении опроса
-                    await self.finish_survey(update, context)
-                    
-                    # Запускаем асинхронное обновление статистики после отправки сообщения
-                    logger.data_processing("статистика", "Запуск обновления статистики", 
-                                       details={"режим": "асинхронный", "user_id": user_id})
-                    asyncio.create_task(self.update_statistics_async())
-                else:
-                    logger.error("сохранение_ответов", None, user_id=user_id, details={"operation": "save_answers"})
+                    if success:
+                        save_duration = (datetime.now() - start_time).total_seconds()
+                        logger.data_processing("ответы", "Сохранение ответов", 
+                                          details={"user_id": user_id, "количество": len(context.user_data['answers']), "длительность": f"{save_duration:.2f} сек"})
+                        
+                        # Отправляем сообщение о завершении опроса
+                        await self.finish_survey(update, context)
+                        
+                        # Запускаем асинхронное обновление статистики после отправки сообщения
+                        logger.data_processing("статистика", "Запуск обновления статистики", 
+                                           details={"режим": "асинхронный", "user_id": user_id})
+                        asyncio.create_task(self.update_statistics_async())
+                        
+                        # Важно! Очищаем данные пользователя для предотвращения дальнейшей обработки
+                        context.user_data.clear()
+                        return ConversationHandler.END
+                    else:
+                        logger.error("сохранение_ответов", None, user_id=user_id, details={"operation": "save_answers", "status": "failed"})
+                        await update.message.reply_text(
+                            "⚠️ Произошла ошибка при сохранении ответов. Пожалуйста, попробуйте ещё раз."
+                        )
+                        return "CONFIRMING"
+                except Exception as e:
+                    logger.error("сохранение_ответов", e, user_id=user_id, details={"operation": "async_save_answers"})
                     await update.message.reply_text(
-                        "❌ Произошла ошибка при сохранении ответов. Пожалуйста, попробуйте позже.",
-                        reply_markup=ReplyKeyboardRemove()
+                        "⚠️ Произошла ошибка при сохранении ответов. Пожалуйста, попробуйте ещё раз."
                     )
-                
-                # Очищаем данные пользователя
-                context.user_data.clear()
-                return ConversationHandler.END
-                
+                    return "CONFIRMING"
+            
             elif answer == "🔄 Начать заново":
                 # Очищаем ответы и начинаем заново
-                context.user_data['answers'] = []
-                context.user_data.pop('current_parent_answer', None)
-                return await self.send_question(update, context)
+                context.user_data.clear()
+                return await self.begin_survey(update, context)
             
             else:
-                # Неизвестный ответ при подтверждении
                 await update.message.reply_text(
                     "❌ Пожалуйста, выберите один из вариантов.",
                     reply_markup=ReplyKeyboardMarkup([
@@ -404,6 +410,14 @@ class SurveyHandler(BaseHandler):
                 )
                 return CONFIRMING
         
+        # Убеждаемся, что мы не вышли за границы вопросов после успешного сохранения
+        if current_question_num >= len(self.questions):
+            logger.warning(f"Попытка доступа к несуществующему вопросу (question_index_out_of_range)",
+                          details={"user_id": user_id, "current_num": current_question_num, "total_questions": len(self.questions)})
+            # Перенаправляем на начало опроса
+            context.user_data.clear()
+            return await self.begin_survey(update, context)
+            
         # Получаем текущий вопрос и его варианты ответов
         current_question = self.questions[current_question_num]
         available_options = self.questions_with_options[current_question]
@@ -653,6 +667,9 @@ class SurveyHandler(BaseHandler):
             main_options = {}
             sub_options = {}
             
+            # Считаем общее количество ответов для этого вопроса
+            total_answers = sum(count for _, count in options_data)
+            
             # Сначала разделяем основные варианты и вложенные
             for option, count in options_data:
                 if " - " in option:
@@ -667,12 +684,14 @@ class SurveyHandler(BaseHandler):
             
             # Выводим основные варианты с их вложенными вариантами
             for option, count in main_options.items():
-                statistics += f"└ {option}: {count}\n"
+                percentage = (count / total_answers * 100) if total_answers > 0 else 0
+                statistics += f"└ {option}: {count} ({percentage:.1f}%)\n"
                 
                 # Если у основного варианта есть вложенные, выводим их
                 if option in sub_options:
                     for sub_option, sub_count in sub_options[option]:
-                        statistics += f"   └ {sub_option}: {sub_count}\n"
+                        sub_percentage = (sub_count / total_answers * 100) if total_answers > 0 else 0
+                        statistics += f"   └ {sub_option}: {sub_count} ({sub_percentage:.1f}%)\n"
             
             # Добавляем пустую строку между вопросами
             statistics += "\n"
@@ -717,7 +736,10 @@ class SurveyHandler(BaseHandler):
         try:
             start_time = time.time()
             logger.data_processing("статистика", "Обновление статистики", details={"этап": "начало"})
-            self.sheets.update_statistics()
+            
+            # Используем ограничитель запросов для обновления статистики
+            await sheets_cache.execute_with_rate_limit(self.sheets.update_statistics)
+            
             duration = time.time() - start_time
             logger.data_processing("статистика", "Обновление статистики", details={"этап": "завершено", "длительность": f"{duration:.2f} сек"})
         except Exception as e:
@@ -726,5 +748,4 @@ class SurveyHandler(BaseHandler):
             except:
                 duration = 0
             logger.warning(f"Ошибка обновления статистики (stat_update_failed)", 
-                         details={"причина": str(e), "user_id": update.effective_user.id})
-            logger.error("обновление_статистики", e, details={"operation": "update_statistics"}) 
+                         exception=e, details={"длительность": f"{duration:.2f} сек"}) 

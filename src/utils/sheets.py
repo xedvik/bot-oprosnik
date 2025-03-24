@@ -7,10 +7,12 @@ import gspread
 from google.oauth2.service_account import Credentials
 import os
 import time
+import asyncio
 
 # Избегаем циклического импорта, перенесем константы из config непосредственно сюда
 # Для гибкости сохраним возможность переопределения этих значений при инициализации
 from utils.questions_cache import QuestionsCache
+from utils.sheets_cache import sheets_cache
 from utils.logger import get_logger
 
 # Получаем логгер для модуля
@@ -416,6 +418,9 @@ class GoogleSheets:
             # Пропускаем заголовок
             questions = [row[0] for row in questions_data[1:] if row and len(row) > 0]
             
+            # Получаем структуру вопросов с вариантами для определения типа вопроса
+            questions_with_options = self.get_questions_with_options()
+            
             # Словарь для подсчета статистики
             stats = {}
             
@@ -423,19 +428,57 @@ class GoogleSheets:
             for i, question in enumerate(questions):
                 question_idx = i + 1
                 
+                # Получаем варианты ответов для этого вопроса, чтобы определить тип
+                question_options = questions_with_options.get(question, [])
+                
+                # Проверяем, имеет ли вопрос варианты ответов или это свободный ввод
+                has_predefined_options = False
+                for opt in question_options:
+                    # Если это обычный вариант ответа (текст или словарь без свободного ввода)
+                    if isinstance(opt, dict) and "sub_options" in opt:
+                        # Если sub_options непустой список или отсутствует, это предопределенный вариант
+                        if "sub_options" not in opt or (isinstance(opt["sub_options"], list) and opt["sub_options"]):
+                            has_predefined_options = True
+                            break
+                    else:
+                        # Простой текстовый вариант считается предопределенным
+                        has_predefined_options = True
+                        break
+                
+                # Если у вопроса нет предопределенных вариантов, это свободный ввод - пропускаем его
+                if not has_predefined_options:
+                    self.logger.data_processing("statistics", "Пропуск вопроса со свободным вводом", 
+                                               details={"вопрос": question})
+                    continue
+                
                 # Список всех ответов на этот вопрос
                 answers = [row[question_idx] for row in responses if len(row) > question_idx]
                 
                 # Группируем ответы для подсчета статистики
                 answer_counts = {}
                 for answer in answers:
+                    # Проверяем, является ли ответ свободным вводом для варианта
+                    is_free_text_answer = False
+                    
                     # Обрабатываем составные ответы
                     if " - " in answer:
                         parts = answer.split(" - ", 1)
                         main_part = parts[0]
                         
-                        # Если это основной вариант с подвариантом
-                        if len(parts) > 1:
+                        # Проверяем, соответствует ли основная часть варианту со свободным вводом
+                        for opt in question_options:
+                            if isinstance(opt, dict) and "text" in opt and opt["text"] == main_part:
+                                # Если для этого варианта есть свободный ввод, пропускаем детальную статистику
+                                if "sub_options" in opt and isinstance(opt["sub_options"], list) and not opt["sub_options"]:
+                                    # Учитываем только основной вариант, а не подварианты
+                                    if main_part not in answer_counts:
+                                        answer_counts[main_part] = 0
+                                    answer_counts[main_part] += 1
+                                    is_free_text_answer = True
+                                    break
+                        
+                        # Если это не свободный ввод, обрабатываем как обычный подвариант
+                        if not is_free_text_answer and len(parts) > 1:
                             sub_part = parts[1]
                             
                             # Учитываем основной вариант
@@ -443,7 +486,7 @@ class GoogleSheets:
                                 answer_counts[main_part] = 0
                             answer_counts[main_part] += 1
                             
-                            # Учитываем подвариант
+                            # Учитываем подвариант (без добавочного текста)
                             compound_key = f"{main_part} - {sub_part.split(' (на вопрос:', 1)[0]}"
                             if compound_key not in answer_counts:
                                 answer_counts[compound_key] = 0
@@ -454,7 +497,9 @@ class GoogleSheets:
                             answer_counts[answer] = 0
                         answer_counts[answer] += 1
                 
-                stats[question] = answer_counts
+                # Если есть ответы для этого вопроса, добавляем в статистику
+                if answer_counts:
+                    stats[question] = answer_counts
             
             # Очищаем лист статистики и обновляем заголовки
             stats_sheet.clear()
@@ -462,6 +507,12 @@ class GoogleSheets:
             stats_sheet.update_cell(1, 2, "Вариант ответа")
             stats_sheet.update_cell(1, 3, "Количество")
             stats_sheet.update_cell(1, 4, "Процент")
+            
+            # Если нет данных для статистики, завершаем работу
+            if not stats:
+                self.logger.warning("no_statistics_data", "Нет данных для статистики", 
+                                  details={"причина": "Все вопросы являются вопросами со свободным вводом"})
+                return True
             
             # Заполняем статистику
             row = 2
@@ -480,14 +531,16 @@ class GoogleSheets:
                     row += 1
             
             self.logger.data_processing("system", "Статистика успешно обновлена", 
-                                       details={"responses": len(responses), "questions": len(questions)})
+                                       details={"responses": len(responses), 
+                                               "questions": len(questions), 
+                                               "questions_in_stats": len(stats)})
             return True
             
         except Exception as e:
             self.logger.error("обновление_статистики", e)
             return False
 
-    def update_stats_sheet_with_percentages(self):
+    def update_stats_sheet_with_percentages(self) -> bool:
         """Обновление листа статистики с процентами для всех вариантов ответов"""
         try:
             self.logger.data_processing("system", "Обновление листа статистики с процентами")
@@ -540,17 +593,73 @@ class GoogleSheets:
             
             # Добавляем статистику по каждому вопросу
             for question, total in question_totals.items():
-                # Добавляем строку с вопросом
-                stats_sheet.append_row([question])
-                
                 # Получаем все возможные варианты ответов для этого вопроса
                 all_options = questions_with_options.get(question, [])
                 
-                # Для каждого варианта ответа показываем статистику
-                for option in all_options:
-                    count = question_answers[question].get(option, 0)
+                # Проверяем, имеет ли вопрос предопределенные варианты ответов
+                has_predefined_options = False
+                for opt in all_options:
+                    # Если это обычный вариант ответа (текст или словарь без свободного ввода)
+                    if isinstance(opt, dict) and "sub_options" in opt:
+                        # Если sub_options непустой список или отсутствует, это предопределенный вариант
+                        if "sub_options" not in opt or (isinstance(opt["sub_options"], list) and opt["sub_options"]):
+                            has_predefined_options = True
+                            break
+                    else:
+                        # Простой текстовый вариант считается предопределенным
+                        has_predefined_options = True
+                        break
+                
+                # Пропускаем вопросы со свободным вводом
+                if not has_predefined_options:
+                    self.logger.data_processing("statistics", "Пропуск вопроса со свободным вводом", 
+                                               details={"вопрос": question})
+                    continue
+                
+                # Добавляем строку с вопросом
+                stats_sheet.append_row([question])
+                
+                # Обрабатываем ответы с вариантами выбора
+                processed_options = {}
+                
+                # Обрабатываем все полученные ответы
+                for answer, count in question_answers[question].items():
+                    # Проверяем, является ли ответ составным (с вложенным свободным вводом)
+                    if " - " in answer:
+                        parts = answer.split(" - ", 1)
+                        main_part = parts[0]
+                        
+                        # Проверяем, является ли основной вариант свободным вводом
+                        is_free_text_option = False
+                        for opt in all_options:
+                            if isinstance(opt, dict) and "text" in opt and opt["text"] == main_part:
+                                if "sub_options" in opt and isinstance(opt["sub_options"], list) and not opt["sub_options"]:
+                                    is_free_text_option = True
+                                    break
+                        
+                        # Если вариант со свободным вводом, учитываем только основную часть
+                        if is_free_text_option:
+                            if main_part not in processed_options:
+                                processed_options[main_part] = 0
+                            processed_options[main_part] += count
+                        else:
+                            # Обычный вариант с подвариантом, учитываем полный ответ
+                            if answer not in processed_options:
+                                processed_options[answer] = 0
+                            processed_options[answer] += count
+                    else:
+                        # Простой ответ
+                        if answer not in processed_options:
+                            processed_options[answer] = 0
+                        processed_options[answer] += count
+                
+                # Выводим статистику по обработанным вариантам
+                for option, count in processed_options.items():
                     percentage = (count / total * 100) if total > 0 else 0
                     stats_sheet.append_row([option, f"{percentage:.1f}%", str(count)])
+                
+                # Добавляем пустую строку после вопроса
+                stats_sheet.append_row([""])
             
             # Добавляем общее количество опросов
             total_surveys = len(answers_data) - 1
@@ -606,56 +715,60 @@ class GoogleSheets:
     
     def get_admins(self) -> list:
         """Получение списка ID админов из таблицы"""
-        try:
-            self.logger.data_processing("system", "Получение списка админов из таблицы")
-            
-            # Проверяем существование листа с админами
+        # Используем кэш для получения списка админов
+        def actual_fetch():
             try:
-                admins_sheet = self.sheet.worksheet(self.ADMINS_SHEET)
-            except gspread.exceptions.WorksheetNotFound:
-                self.logger.warning("admins_sheet_not_found", "Лист администраторов не найден", 
-                                  details={"лист": self.ADMINS_SHEET, "действие": "Создание нового листа"})
-                # Создаем лист с админами, если его нет
-                admins_sheet = self.sheet.add_worksheet(title=self.ADMINS_SHEET, rows=100, cols=2)
-                # Добавляем заголовок
-                admins_sheet.update('A1:B1', [['ID', 'Имя']])
-            
-            # Получаем все данные из таблицы
-            data = admins_sheet.get_all_values()
-            
-            # Пропускаем заголовок
-            if data and len(data) > 0:
-                data = data[1:]
+                self.logger.data_processing("system", "Получение списка админов из таблицы")
                 
-            # Извлекаем ID админов
-            admin_ids = []
-            for row in data:
-                if row and row[0]:  # Проверяем, что строка не пустая и есть ID
-                    try:
-                        admin_id = int(row[0])
+                # Проверяем существование листа с админами
+                try:
+                    admins_sheet = self.sheet.worksheet(self.ADMINS_SHEET)
+                except gspread.exceptions.WorksheetNotFound:
+                    self.logger.warning("admins_sheet_not_found", "Лист администраторов не найден", 
+                                      details={"лист": self.ADMINS_SHEET, "действие": "Создание нового листа"})
+                    # Создаем лист с админами, если его нет
+                    admins_sheet = self.sheet.add_worksheet(title=self.ADMINS_SHEET, rows=100, cols=2)
+                    # Добавляем заголовок
+                    admins_sheet.update('A1:B1', [['ID', 'Имя']])
+                
+                # Получаем все данные из таблицы
+                data = admins_sheet.get_all_values()
+                
+                # Пропускаем заголовок
+                if data and len(data) > 0:
+                    data = data[1:]
+                    
+                # Извлекаем ID админов
+                admin_ids = []
+                for row in data:
+                    if row and row[0]:  # Проверяем, что строка не пустая и есть ID
+                        try:
+                            admin_id = int(row[0])
+                            admin_ids.append(admin_id)
+                        except ValueError:
+                            self.logger.warning("invalid_admin_id", "Некорректный формат ID администратора", 
+                                             details={"значение": row[0], "ожидаемый_тип": "целое число"})
+                
+                # Добавляем админов из переменной окружения
+                env_admins = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
+                for admin_id in env_admins:
+                    if admin_id not in admin_ids:
                         admin_ids.append(admin_id)
-                    except ValueError:
-                        self.logger.warning("invalid_admin_id", "Некорректный формат ID администратора", 
-                                         details={"значение": row[0], "ожидаемый_тип": "целое число"})
-            
-            # Добавляем админов из переменной окружения
-            env_admins = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
-            for admin_id in env_admins:
-                if admin_id not in admin_ids:
-                    admin_ids.append(admin_id)
-            
-            self.logger.data_processing("system", f"Получено {len(admin_ids)} админов", 
-                                       details={"admins": admin_ids})
-            return admin_ids
-            
-        except Exception as e:
-            self.logger.error("получение_списка_админов", e)
-            # Возвращаем админов из переменной окружения в случае ошибки
-            env_admins = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
-            self.logger.data_processing("system", "Используем админов из переменной окружения", 
-                                       details={"admins": env_admins})
-            return env_admins
-    
+                
+                self.logger.data_processing("system", f"Получено {len(admin_ids)} админов", 
+                                           details={"admins": admin_ids})
+                return admin_ids
+                
+            except Exception as e:
+                self.logger.error("получение_списка_админов", e)
+                # Возвращаем админов из переменной окружения в случае ошибки
+                env_admins = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
+                self.logger.data_processing("system", "Используем админов из переменной окружения", 
+                                           details={"admins": env_admins})
+                return env_admins
+                
+        return sheets_cache.get_admins(actual_fetch)
+
     def get_admins_info(self) -> list:
         """Получает полную информацию об администраторах (ID, имя, описание)"""
         try:
@@ -707,7 +820,24 @@ class GoogleSheets:
             
             # Для каждого вопроса с вариантами
             for question, options in questions_with_options.items():
-                if not options:  # Пропускаем вопросы без вариантов
+                # Проверяем, является ли вопрос вопросом со свободным вводом
+                has_predefined_options = False
+                for opt in options:
+                    # Если это обычный вариант ответа (текст или словарь без свободного ввода)
+                    if isinstance(opt, dict) and "sub_options" in opt:
+                        # Если sub_options непустой список или отсутствует, это предопределенный вариант
+                        if "sub_options" not in opt or (isinstance(opt["sub_options"], list) and opt["sub_options"]):
+                            has_predefined_options = True
+                            break
+                    else:
+                        # Простой текстовый вариант считается предопределенным
+                        has_predefined_options = True
+                        break
+                
+                # Пропускаем вопросы со свободным вводом
+                if not has_predefined_options:
+                    self.logger.data_processing("statistics", "Пропуск вопроса со свободным вводом", 
+                                               details={"вопрос": question})
                     continue
                     
                 # Находим индекс колонки для текущего вопроса
@@ -724,14 +854,34 @@ class GoogleSheets:
                     if question_index < len(row):
                         answer = row[question_index]
                         if answer:  # Учитываем только непустые ответы
-                            option_counts[answer] = option_counts.get(answer, 0) + 1
-                            total_answers += 1
+                            # Обрабатываем составные ответы для свободного ввода
+                            if " - " in answer:
+                                parts = answer.split(" - ", 1)
+                                main_part = parts[0]
+                                
+                                # Проверяем, является ли основной вариант свободным вводом
+                                is_free_text_option = False
+                                for opt in options:
+                                    if isinstance(opt, dict) and "text" in opt and opt["text"] == main_part:
+                                        if "sub_options" in opt and isinstance(opt["sub_options"], list) and not opt["sub_options"]:
+                                            is_free_text_option = True
+                                            break
+                                
+                                # Если это свободный ввод, учитываем только основную часть
+                                if is_free_text_option:
+                                    option_counts[main_part] = option_counts.get(main_part, 0) + 1
+                                    total_answers += 1
+                                else:
+                                    option_counts[answer] = option_counts.get(answer, 0) + 1
+                                    total_answers += 1
+                            else:
+                                option_counts[answer] = option_counts.get(answer, 0) + 1
+                                total_answers += 1
                 
-                # Формируем статистику с процентами
-                for option in options:
-                    count = option_counts.get(option, 0)
+                # Формируем статистику 
+                for answer, count in option_counts.items():
                     percentage = round((count / total_answers * 100) if total_answers > 0 else 0)
-                    statistics.append([question, option, f"{count} ({percentage}%)"])
+                    statistics.append([question, answer, count])
             
             self.logger.data_processing("system", f"Получено {len(statistics)} строк статистики")
             return statistics
@@ -842,6 +992,9 @@ class GoogleSheets:
                 current_time
             ])
             
+            # Инвалидируем кэш пользователей
+            sheets_cache.invalidate_user_cache()
+            
             self.logger.admin_action("system", "Добавление пользователя", 
                                     details={"user_id": user_id, "telegram_id": telegram_id, "username": username})
             return True
@@ -851,22 +1004,26 @@ class GoogleSheets:
 
     def is_user_exists(self, telegram_id: int) -> bool:
         """Проверка существования пользователя"""
-        try:
-            # Оптимизированный поиск с использованием фильтра по столбцу telegram_id
-            users_sheet = self.sheet.worksheet(self.SHEET_NAMES['users'])
-            
-            # Находим ячейки, содержащие telegram_id
-            cell_list = users_sheet.findall(str(telegram_id))
-            
-            # Проверяем, находится ли хотя бы одна из найденных ячеек во 2-м столбце (индекс 1)
-            for cell in cell_list:
-                if cell.col == 2:  # Столбец B (telegram_id)
-                    return True
-                    
-            return False
-        except Exception as e:
-            self.logger.error("проверка_существования_пользователя", e, details={"telegram_id": telegram_id})
-            return False
+        # Используем кэш для проверки существования пользователя
+        def actual_check(telegram_id):
+            try:
+                # Оптимизированный поиск с использованием фильтра по столбцу telegram_id
+                users_sheet = self.sheet.worksheet(self.SHEET_NAMES['users'])
+                
+                # Находим ячейки, содержащие telegram_id
+                cell_list = users_sheet.findall(str(telegram_id))
+                
+                # Проверяем, находится ли хотя бы одна из найденных ячеек во 2-м столбце (индекс 1)
+                for cell in cell_list:
+                    if cell.col == 2:  # Столбец B (telegram_id)
+                        return True
+                        
+                return False
+            except Exception as e:
+                self.logger.error("проверка_существования_пользователя", e, details={"telegram_id": telegram_id})
+                return False
+                
+        return sheets_cache.is_user_exists(telegram_id, lambda tid: actual_check(tid))
 
     def get_users_list(self, page: int = 1, page_size: int = 10) -> tuple:
         """Получение списка пользователей с пагинацией
@@ -969,33 +1126,37 @@ class GoogleSheets:
 
     def get_message(self, message_type: str) -> dict:
         """Получение текста и изображения сообщения по его типу"""
-        try:
-            messages_sheet = self.sheet.worksheet(self.SHEET_NAMES['messages'])
-            all_messages = messages_sheet.get_all_values()
-            
-            # Пропускаем заголовок
-            if len(all_messages) > 1:
-                for row in all_messages[1:]:
-                    if row[0] == message_type:
-                        # Возвращаем текст и изображение
-                        image_url = row[2] if len(row) > 2 else ""
-                        return {
-                            "text": row[1],
-                            "image": image_url
-                        }
-            
-            # Если сообщение не найдено, возвращаем значение по умолчанию
-            return {
-                "text": self.DEFAULT_MESSAGES.get(message_type, ''),
-                "image": ""
-            }
-            
-        except Exception as e:
-            self.logger.error("получение_сообщения", e, details={"message_type": message_type})
-            return {
-                "text": self.DEFAULT_MESSAGES.get(message_type, ''),
-                "image": ""
-            }
+        # Используем кэш для получения сообщения
+        def actual_fetch(message_type):
+            try:
+                messages_sheet = self.sheet.worksheet(self.SHEET_NAMES['messages'])
+                all_messages = messages_sheet.get_all_values()
+                
+                # Пропускаем заголовок
+                if len(all_messages) > 1:
+                    for row in all_messages[1:]:
+                        if row[0] == message_type:
+                            # Возвращаем текст и изображение
+                            image_url = row[2] if len(row) > 2 else ""
+                            return {
+                                "text": row[1],
+                                "image": image_url
+                            }
+                
+                # Если сообщение не найдено, возвращаем значение по умолчанию
+                return {
+                    "text": self.DEFAULT_MESSAGES.get(message_type, ''),
+                    "image": ""
+                }
+                
+            except Exception as e:
+                self.logger.error("получение_сообщения", e, details={"message_type": message_type})
+                return {
+                    "text": self.DEFAULT_MESSAGES.get(message_type, ''),
+                    "image": ""
+                }
+                
+        return sheets_cache.get_message(message_type, lambda mt: actual_fetch(mt))
 
     def update_message(self, message_type: str, new_text: str, image_url: str = None) -> bool:
         """Обновление текста и изображения сообщения"""
@@ -1034,6 +1195,9 @@ class GoogleSheets:
                     image_url if image_url is not None else "", 
                     current_time
                 ])
+            
+            # Инвалидируем кэш сообщений для обновленного типа
+            sheets_cache.invalidate_messages_cache(message_type)
             
             self.logger.admin_action("system", "Сообщение успешно обновлено", details={"message_type": message_type})
             return True
@@ -1151,6 +1315,9 @@ class GoogleSheets:
             # Добавляем пост
             posts_sheet.append_row(row_data)
             
+            # Инвалидируем кэш постов
+            sheets_cache.invalidate_posts_cache()
+            
             self.logger.admin_action("system", "Пост успешно сохранен", details={"post_id": post_id, "admin_id": admin_id})
             return post_id
             
@@ -1160,62 +1327,66 @@ class GoogleSheets:
     
     def get_all_posts(self) -> list:
         """Получение всех постов из таблицы"""
-        try:
-            self.logger.data_processing("system", "Получение всех постов")
-            posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
-            
-            # Получаем все данные из таблицы
-            data = posts_sheet.get_all_values()
-            
-            # Пропускаем заголовок
-            if data and len(data) > 0:
-                data = data[1:]
-            
-            # Преобразуем данные в список словарей
-            posts = []
-            for row in data:
-                if len(row) >= 8:  # Новый формат с названием
-                    post = {
-                        'id': row[0],
-                        'title': row[1],
-                        'text': row[2],
-                        'image_url': row[3],
-                        'button_text': row[4],
-                        'button_url': row[5],
-                        'created_at': row[6],
-                        'admin_id': row[7]
-                    }
-                elif len(row) >= 7:  # Старый формат без названия, но с кнопками
-                    post = {
-                        'id': row[0],
-                        'title': 'Пост №' + row[0],  # Генерируем название для старых постов
-                        'text': row[1],
-                        'image_url': row[2],
-                        'button_text': row[3],
-                        'button_url': row[4],
-                        'created_at': row[5],
-                        'admin_id': row[6]
-                    }
-                else:
-                    # Обрабатываем самые старые посты без кнопок
-                    post = {
-                        'id': row[0],
-                        'title': 'Пост №' + row[0],  # Генерируем название
-                        'text': row[1],
-                        'image_url': row[2],
-                        'button_text': '',
-                        'button_url': '',
-                        'created_at': row[3] if len(row) > 3 else '',
-                        'admin_id': row[4] if len(row) > 4 else ''
-                    }
-                posts.append(post)
-            
-            self.logger.data_processing("system", f"Получено {len(posts)} постов")
-            return posts
-            
-        except Exception as e:
-            self.logger.error("получение_постов", e)
-            return []
+        # Используем кэш для получения постов
+        def actual_fetch():
+            try:
+                self.logger.data_processing("system", "Получение всех постов")
+                posts_sheet = self.sheet.worksheet(self.SHEET_NAMES['posts'])
+                
+                # Получаем все данные из таблицы
+                data = posts_sheet.get_all_values()
+                
+                # Пропускаем заголовок
+                if data and len(data) > 0:
+                    data = data[1:]
+                
+                # Преобразуем данные в список словарей
+                posts = []
+                for row in data:
+                    if len(row) >= 8:  # Новый формат с названием
+                        post = {
+                            'id': row[0],
+                            'title': row[1],
+                            'text': row[2],
+                            'image_url': row[3],
+                            'button_text': row[4],
+                            'button_url': row[5],
+                            'created_at': row[6],
+                            'admin_id': row[7]
+                        }
+                    elif len(row) >= 7:  # Старый формат без названия, но с кнопками
+                        post = {
+                            'id': row[0],
+                            'title': 'Пост №' + row[0],  # Генерируем название для старых постов
+                            'text': row[1],
+                            'image_url': row[2],
+                            'button_text': row[3],
+                            'button_url': row[4],
+                            'created_at': row[5],
+                            'admin_id': row[6]
+                        }
+                    else:
+                        # Обрабатываем самые старые посты без кнопок
+                        post = {
+                            'id': row[0],
+                            'title': 'Пост №' + row[0],  # Генерируем название
+                            'text': row[1],
+                            'image_url': row[2],
+                            'button_text': '',
+                            'button_url': '',
+                            'created_at': row[3] if len(row) > 3 else '',
+                            'admin_id': row[4] if len(row) > 4 else ''
+                        }
+                    posts.append(post)
+                
+                self.logger.data_processing("system", f"Получено {len(posts)} постов")
+                return posts
+                
+            except Exception as e:
+                self.logger.error("получение_постов", e)
+                return []
+                
+        return sheets_cache.get_posts(actual_fetch)
     
     def get_post_by_id(self, post_id: str) -> dict:
         """Получение поста по ID"""
@@ -1354,12 +1525,40 @@ class GoogleSheets:
             # Удаляем строку
             posts_sheet.delete_rows(row_index)
             
+            # Инвалидируем кэш постов
+            sheets_cache.invalidate_posts_cache()
+            
             self.logger.admin_action("system", "Пост успешно удален", details={"post_id": post_id})
             return True
             
         except Exception as e:
             self.logger.error("удаление_поста", e)
             return False
+
+    # Асинхронная реализация для операций с Google Sheets с учетом ограничения запросов
+    async def async_is_user_exists(self, telegram_id: int) -> bool:
+        """Асинхронная проверка существования пользователя с учетом ограничения запросов"""
+        return await sheets_cache.execute_with_rate_limit(self.is_user_exists, telegram_id)
+        
+    async def async_add_user(self, telegram_id: int, username: str) -> bool:
+        """Асинхронное добавление пользователя с учетом ограничения запросов"""
+        return await sheets_cache.execute_with_rate_limit(self.add_user, telegram_id, username)
+        
+    async def async_get_message(self, message_type: str) -> dict:
+        """Асинхронное получение сообщения с учетом ограничения запросов"""
+        return await sheets_cache.execute_with_rate_limit(self.get_message, message_type)
+        
+    async def async_get_admins(self) -> list:
+        """Асинхронное получение списка админов с учетом ограничения запросов"""
+        return await sheets_cache.execute_with_rate_limit(self.get_admins)
+        
+    async def async_get_all_posts(self) -> list:
+        """Асинхронное получение всех постов с учетом ограничения запросов"""
+        return await sheets_cache.execute_with_rate_limit(self.get_all_posts)
+        
+    async def async_save_answers(self, answers: list, user_id: int) -> bool:
+        """Асинхронное сохранение ответов с учетом ограничения запросов"""
+        return await sheets_cache.execute_with_rate_limit(self.save_answers, answers, user_id)
 
 # Импортируем и добавляем методы из sheets_questions к классу GoogleSheets
 # Размещаем импорт в конце файла чтобы избежать циклических зависимостей

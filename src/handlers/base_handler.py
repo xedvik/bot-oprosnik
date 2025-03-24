@@ -2,7 +2,7 @@
 Базовый класс для обработчиков сообщений
 """
 
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler, Application
 
 from utils.sheets import GoogleSheets
@@ -39,10 +39,10 @@ class BaseHandler:
         context.user_data.clear()
         
         # Проверяем, существует ли пользователь, и регистрируем его при необходимости
-        is_new_user = not self.sheets.is_user_exists(user.id)
+        is_new_user = not await self.sheets.async_is_user_exists(user.id)
         if is_new_user:
             username = user.username if user.username else "Не указан"
-            if self.sheets.add_user(user.id, username):
+            if await self.sheets.async_add_user(user.id, username):
                 logger.user_action(user.id, "Регистрация нового пользователя", details={"username": username})
             else:
                 logger.error("регистрация_пользователя", details={"user_id": user.id, "username": username})
@@ -56,7 +56,7 @@ class BaseHandler:
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         # Получаем приветственное сообщение и форматируем его
-        message_data = self.sheets.get_message('start')
+        message_data = await self.sheets.async_get_message('start')
         formatted_message = message_data["text"].format(username=user.first_name)
         
         # Проверяем, есть ли изображение для отправки
@@ -109,15 +109,20 @@ class BaseHandler:
         return ConversationHandler.END
 
     async def finish_survey(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Завершение опроса"""
+        """Завершение опроса и благодарность пользователю"""
         user = update.effective_user
-        logger.user_action(user.id, "Завершение опроса", "Регистрация завершена")
+        logger.user_action(user.id, "Завершение опроса", details={"тип": "Регистрация завершена"})
         
-        # Получаем сообщение после опроса
-        message_data = self.sheets.get_message('finish')
-        formatted_message = message_data["text"].format(username=user.first_name)
+        # Получаем сообщение о завершении из таблицы
+        message_data = self.sheets.get_message("finish")
         
-
+        # Форматируем сообщение (замена плейсхолдеров и обработка Markdown)
+        message_text = message_data.get("text", "Спасибо за регистрацию!")
+        formatted_message = message_text.replace("{{username}}", user.username or "")
+        
+        # Определяем клавиатуру для завершения
+        reply_markup = ReplyKeyboardRemove()
+        
         # Проверяем, есть ли изображение для отправки
         image_url = message_data.get("image", "")
         if image_url and image_url.strip():
