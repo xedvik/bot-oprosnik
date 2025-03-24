@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filt
 import telegram
 import telegram.error  # Добавляем импорт для обработки ошибок Telegram
 from io import BytesIO
+from telegram.constants import ParseMode, ChatAction
 
 from models.states import *
 from utils.sheets import GoogleSheets
@@ -503,6 +504,14 @@ class PostHandler(BaseHandler):
         for user in users_data:
             try:
                 telegram_id = int(user[1])  # Telegram ID пользователя
+                username = user[0] if len(user) > 0 else "Неизвестный пользователь"
+                
+                # Пропускаем невалидные ID
+                if telegram_id <= 0:
+                    logger.warning("невалидный_id_пользователя", 
+                                  details={"user_id": telegram_id, "username": username})
+                    fail_count += 1
+                    continue
                 
                 # Формируем текст сообщения с названием поста если оно есть
                 post_title = post.get('title', '')
@@ -514,23 +523,43 @@ class PostHandler(BaseHandler):
                     message_text = f"<b>{post_title}</b>\n\n{post_text}"
                 
                 # Отправляем пост
-                if post.get('image_url'):
-                    await self.application.bot.send_photo(
-                        chat_id=telegram_id,
-                        photo=post['image_url'],
-                        caption=message_text,
-                        parse_mode='HTML',
-                        reply_markup=inline_keyboard
-                    )
-                else:
-                    await self.application.bot.send_message(
-                        chat_id=telegram_id,
-                        text=message_text,
-                        parse_mode='HTML',
-                        reply_markup=inline_keyboard
-                    )
+                try:
+                    if post.get('image_url'):
+                        await self.application.bot.send_photo(
+                            chat_id=telegram_id,
+                            photo=post['image_url'],
+                            caption=message_text,
+                            parse_mode='HTML',
+                            reply_markup=inline_keyboard
+                        )
+                    else:
+                        await self.application.bot.send_message(
+                            chat_id=telegram_id,
+                            text=message_text,
+                            parse_mode='HTML',
+                            reply_markup=inline_keyboard
+                        )
+                    
+                    success_count += 1
+                    logger.info("отправка_поста_пользователю", 
+                               details={"user_id": telegram_id, "username": username, "статус": "успех"})
                 
-                success_count += 1
+                except telegram.error.BadRequest as e:
+                    if "Chat not found" in str(e):
+                        logger.warning("чат_не_найден", 
+                                      details={"user_id": telegram_id, "username": username, "ошибка": str(e)})
+                    else:
+                        logger.error("ошибка_запроса_при_отправке", e, 
+                                    details={"user_id": telegram_id, "username": username, "тип_ошибки": "BadRequest"})
+                    fail_count += 1
+                
+                # Обрабатываем все остальные исключения Telegram API
+                except Exception as telegram_error:
+                    error_type = type(telegram_error).__name__
+                    logger.warning("ошибка_отправки_сообщения", 
+                                  details={"user_id": telegram_id, "username": username, 
+                                          "ошибка": str(telegram_error), "тип_ошибки": error_type})
+                    fail_count += 1
                 
                 # Обновляем сообщение о прогрессе каждые 10 пользователей
                 if (success_count + fail_count) % 10 == 0 and progress_message:
@@ -542,7 +571,11 @@ class PostHandler(BaseHandler):
                     )
                 
             except Exception as e:
-                logger.error("ошибка_при_отправке_поста_пользователю_user", e, user_id=1)
+                username = user[0] if len(user) > 0 else "Неизвестный пользователь"
+                logger.error("ошибка_при_отправке_поста_пользователю", e, 
+                            details={"user_id": telegram_id if 'telegram_id' in locals() else "неизвестный", 
+                                    "username": username, 
+                                    "error_type": type(e).__name__})
                 fail_count += 1
         
         # Отправляем финальное сообщение о результатах
