@@ -381,7 +381,13 @@ class GoogleSheets:
             return False
     
     def update_statistics(self):
-        """Обновление статистики в отдельном листе"""
+        """
+        Обновление статистики в отдельном листе.
+        
+        Подсчитывает количество и процент для каждого варианта ответа по каждому вопросу.
+        Учитывает только вопросы с предопределенными вариантами ответов.
+        Свободные ответы исключаются из статистики.
+        """
         try:
             # Проверяем наличие листа статистики
             stats_sheet = self.sheet.worksheet(self.STATS_SHEET)
@@ -424,35 +430,75 @@ class GoogleSheets:
             # Словарь для подсчета статистики
             stats = {}
             
-            # Индексы вопросов в ответах (начиная с 1, так как первый столбец - ID пользователя)
+            # Для отладки - записываем информацию о структуре ответов
+            self.logger.data_processing("statistics", "Анализ структуры ответов", 
+                                     details={"заголовки": all_responses[0][:5], 
+                                            "ответы_пример": str(responses[0][:5]) if responses else "нет ответов"})
+            
+            # Индексы вопросов в ответах
+            # Первый столбец в responses - это timestamp, второй - user_id, начиная с третьего идут ответы
             for i, question in enumerate(questions):
-                question_idx = i + 1
+                question_idx = i + 2  # +2 потому что первые два столбца - timestamp и user_id
+                
+                # Проверка на корректность индекса
+                if question_idx >= len(all_responses[0]) and len(all_responses[0]) > 0:
+                    self.logger.warning("incorrect_question_index", "Некорректный индекс вопроса", 
+                                     details={"вопрос": question, "индекс": question_idx, 
+                                            "количество_столбцов": len(all_responses[0])})
+                    continue
                 
                 # Получаем варианты ответов для этого вопроса, чтобы определить тип
                 question_options = questions_with_options.get(question, [])
                 
-                # Проверяем, имеет ли вопрос варианты ответов или это свободный ввод
+                # Улучшенная проверка: вопрос считается с предопределенными вариантами, 
+                # только если у него есть хотя бы один фиксированный вариант ответа
                 has_predefined_options = False
+                predefined_option_texts = []
+                
+                # Логируем информацию о вариантах ответов для отладки
+                self.logger.data_processing("statistics", f"Анализ вариантов вопроса: {question}", 
+                                         details={"варианты": str(question_options)[:300]})
+                
                 for opt in question_options:
-                    # Если это обычный вариант ответа (текст или словарь без свободного ввода)
-                    if isinstance(opt, dict) and "sub_options" in opt:
-                        # Если sub_options непустой список или отсутствует, это предопределенный вариант
-                        if "sub_options" not in opt or (isinstance(opt["sub_options"], list) and opt["sub_options"]):
-                            has_predefined_options = True
-                            break
-                    else:
-                        # Простой текстовый вариант считается предопределенным
+                    # Если это простой текстовый вариант
+                    if not isinstance(opt, dict):
                         has_predefined_options = True
-                        break
+                        predefined_option_texts.append(str(opt))
+                        continue
+                    
+                    # Если это словарь с текстом
+                    if isinstance(opt, dict) and "text" in opt:
+                        # Проверяем, имеет ли вариант подварианты для выбора или это просто контейнер для свободного ввода
+                        if "sub_options" not in opt or (isinstance(opt["sub_options"], list) and len(opt["sub_options"]) > 0):
+                            # Вариант имеет подварианты для выбора или не имеет подвариантов вообще (обычный вариант)
+                            has_predefined_options = True
+                            predefined_option_texts.append(opt["text"])
                 
                 # Если у вопроса нет предопределенных вариантов, это свободный ввод - пропускаем его
-                if not has_predefined_options:
+                if not has_predefined_options or len(predefined_option_texts) == 0:
                     self.logger.data_processing("statistics", "Пропуск вопроса со свободным вводом", 
                                                details={"вопрос": question})
                     continue
                 
+                # Логируем найденные предопределенные варианты
+                self.logger.data_processing("statistics", f"Предопределенные варианты для вопроса: {question}", 
+                                        details={"варианты": str(predefined_option_texts)})
+                
                 # Список всех ответов на этот вопрос
-                answers = [row[question_idx] for row in responses if len(row) > question_idx]
+                answers = []
+                for row in responses:
+                    if len(row) > question_idx:
+                        answer = row[question_idx]
+                        # Проверяем, является ли ответ одним из предопределенных вариантов или начинается с него
+                        for opt_text in predefined_option_texts:
+                            if answer == opt_text or answer.startswith(opt_text + " - "):
+                                answers.append(answer)
+                                break
+                
+                # Логируем количество найденных ответов для отладки
+                self.logger.data_processing("statistics", f"Найдено ответов для вопроса: {question}", 
+                                        details={"количество": len(answers), 
+                                                "примеры": str(answers[:3]) if answers else "нет ответов"})
                 
                 # Группируем ответы для подсчета статистики
                 answer_counts = {}
@@ -500,6 +546,8 @@ class GoogleSheets:
                 # Если есть ответы для этого вопроса, добавляем в статистику
                 if answer_counts:
                     stats[question] = answer_counts
+                    self.logger.data_processing("statistics", f"Подсчитанная статистика для вопроса: {question}", 
+                                            details={"статистика": str(answer_counts)})
             
             # Очищаем лист статистики и обновляем заголовки
             stats_sheet.clear()
@@ -511,15 +559,38 @@ class GoogleSheets:
             # Если нет данных для статистики, завершаем работу
             if not stats:
                 self.logger.warning("no_statistics_data", "Нет данных для статистики", 
-                                  details={"причина": "Все вопросы являются вопросами со свободным вводом"})
+                                  details={"причина": "Все вопросы являются вопросами со свободным вводом или нет ответов на вопросы с вариантами"})
                 return True
             
             # Заполняем статистику
             row = 2
             for question, answer_counts in stats.items():
+                # Получаем только ответы, которые соответствуют предопределенным вариантам
+                question_options = questions_with_options.get(question, [])
+                predefined_option_texts = []
+                
+                for opt in question_options:
+                    if not isinstance(opt, dict):
+                        predefined_option_texts.append(str(opt))
+                    elif "text" in opt:
+                        predefined_option_texts.append(opt["text"])
+                
                 for answer, count in answer_counts.items():
+                    # Проверяем, соответствует ли ответ предопределенному варианту или его подварианту
+                    is_predefined = False
+                    for opt_text in predefined_option_texts:
+                        if answer == opt_text or (isinstance(answer, str) and " - " in answer and answer.startswith(opt_text + " - ")):
+                            is_predefined = True
+                            break
+                    
+                    if not is_predefined:
+                        # Пропускаем ответы, которые не соответствуют предопределенным вариантам
+                        self.logger.data_processing("statistics", f"Пропуск неопределенного ответа", 
+                                                details={"вопрос": question, "ответ": answer})
+                        continue
+                        
                     # Вычисляем процент
-                    total_answers = len([r for r in responses if len(r) > questions.index(question) + 1])
+                    total_answers = sum(answer_counts.values())
                     percentage = 0 if total_answers == 0 else (count / total_answers) * 100
                     
                     # Добавляем строку статистики
