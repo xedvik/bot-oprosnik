@@ -524,7 +524,7 @@ class SurveyHandler(BaseHandler):
             else:
                 # Если родительский вариант не найден, сбрасываем context.user_data['current_parent_answer']
                 logger.warning(f"Родительский вариант не найден (родительский_вариант_не_найден)", 
-                             details={"вариант": current_parent_answer, "user_id": user_id})
+                             details={"вариант": parent_answer, "user_id": user_id})
                 context.user_data.pop('current_parent_answer', None)
                 # Повторно отправляем текущий вопрос
                 return await self.send_question(update, context)
@@ -549,7 +549,28 @@ class SurveyHandler(BaseHandler):
                 is_valid_option = True
                 break
         
-        if not is_valid_option:
+        # Если есть варианты ответов, но ответ не соответствует ни одному из них
+        if available_options and not is_valid_option:
+            # Создаем клавиатуру с вариантами ответов
+            keyboard = []
+            for opt in available_options:
+                if isinstance(opt, dict) and "text" in opt:
+                    keyboard.append([KeyboardButton(opt["text"])])
+                else:
+                    keyboard.append([KeyboardButton(str(opt))])
+                    
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            # Отправляем сообщение с просьбой выбрать один из предложенных вариантов
+            await update.message.reply_text(
+                "❌ Пожалуйста, выберите один из предложенных вариантов:",
+                reply_markup=reply_markup
+            )
+            logger.user_action(user_id, "Отклонение свободного ввода", 
+                            details={"причина": "есть варианты ответов", "ввод": answer})
+            
+            return f"QUESTION_{current_question_num}"
+        elif not available_options:
             # Если ответ не соответствует ни одному из вариантов или нет доступных вариантов,
             # считаем это свободным ответом для вопроса без вариантов
             context.user_data['answers'].append(answer)
