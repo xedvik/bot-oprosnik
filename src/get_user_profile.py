@@ -31,21 +31,43 @@ async def get_user_info(user_id: int) -> dict:
         bot = Bot(BOT_TOKEN)
         
         # Пробуем получить информацию через get_chat
-        user = await bot.get_chat(user_id)
+        chat = await bot.get_chat(user_id)
         
         # Формируем базовую информацию
         user_info = {
-            'id': user.id,
-            'first_name': user.first_name,
-            'last_name': user.last_name if hasattr(user, 'last_name') else None,
-            'username': user.username if hasattr(user, 'username') else None,
-            'full_name': user.full_name,
-            'is_bot': user.is_bot,
-            'language_code': user.language_code if hasattr(user, 'language_code') else None,
-            'bio': user.bio if hasattr(user, 'bio') else None,
-            'description': user.description if hasattr(user, 'description') else None,
+            'id': chat.id,
+            'type': chat.type,
         }
         
+        # Добавляем информацию, которая может быть доступна в зависимости от типа чата
+        if hasattr(chat, 'first_name'):
+            user_info['first_name'] = chat.first_name
+        
+        if hasattr(chat, 'last_name'):
+            user_info['last_name'] = chat.last_name
+            
+        if hasattr(chat, 'username'):
+            user_info['username'] = chat.username
+            
+        if hasattr(chat, 'bio'):
+            user_info['bio'] = chat.bio
+            
+        if hasattr(chat, 'full_name'):
+            user_info['full_name'] = chat.full_name
+        else:
+            # Формируем full_name из first_name и last_name если доступны
+            full_name = user_info.get('first_name', '')
+            if user_info.get('last_name'):
+                full_name += ' ' + user_info.get('last_name')
+            if full_name:
+                user_info['full_name'] = full_name
+                
+        if hasattr(chat, 'description'):
+            user_info['description'] = chat.description
+        
+        if hasattr(chat, 'invite_link'):
+            user_info['invite_link'] = chat.invite_link
+            
         # Пробуем получить дополнительную информацию через get_chat_member
         try:
             chat_member = await bot.get_chat_member(
@@ -56,6 +78,14 @@ async def get_user_info(user_id: int) -> dict:
             member_info = {
                 'status': chat_member.status,
             }
+            
+            # Добавляем информацию о пользователе из chat_member
+            if hasattr(chat_member, 'user'):
+                user = chat_member.user
+                if hasattr(user, 'is_bot'):
+                    member_info['is_bot'] = user.is_bot
+                if hasattr(user, 'language_code'):
+                    member_info['language_code'] = user.language_code
             
             # Добавляем опциональные поля, которые могут быть доступны
             if hasattr(chat_member, 'joined_date'):
