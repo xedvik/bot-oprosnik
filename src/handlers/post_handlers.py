@@ -1065,16 +1065,28 @@ class PostHandler(BaseHandler):
         if not context.args or len(context.args) < 2:
             await update.message.reply_text(
                 "⚠️ Недостаточно параметров.\n\n"
-                "Использование: /edit_sent_post <message_id> <новый_текст>\n\n"
-                "Пример: /edit_sent_post 123456 Это обновленный текст поста",
+                "Использование: /edit_sent_post <message_id> <новый_текст>\n"
+                "Или: /edit_sent_post <chat_id> <message_id> <новый_текст>\n\n"
+                "Примеры:\n"
+                "1. /edit_sent_post 123456 Это обновленный текст поста\n"
+                "2. /edit_sent_post -1001234567890 123456 Это обновленный текст поста",
                 reply_markup=ReplyKeyboardRemove()
             )
             return
         
         try:
-            # Извлекаем message_id и новый текст
-            message_id = int(context.args[0])
-            new_text = " ".join(context.args[1:])
+            # Проверяем, указан ли chat_id
+            if len(context.args) >= 3 and (context.args[0].startswith('-100') or context.args[0].startswith('@')):
+                # Формат: /edit_sent_post <chat_id> <message_id> <текст>
+                chat_id = context.args[0]
+                message_id = int(context.args[1])
+                new_text = " ".join(context.args[2:])
+            else:
+                # Формат: /edit_sent_post <message_id> <текст>
+                # Используем ID текущего чата
+                chat_id = update.effective_chat.id
+                message_id = int(context.args[0])
+                new_text = " ".join(context.args[1:])
             
             # Проверяем, что у нас есть текст для обновления
             if not new_text:
@@ -1087,14 +1099,14 @@ class PostHandler(BaseHandler):
             try:
                 # Пробуем отредактировать сообщение
                 await self.application.bot.edit_message_text(
-                    chat_id=None,  # Будет использоваться тот же чат
+                    chat_id=chat_id,
                     message_id=message_id,
                     text=new_text,
                     parse_mode='HTML'
                 )
                 
                 logger.admin_action(user_id, "Редактирование поста", "Пост успешно отредактирован", 
-                                  details={"message_id": message_id})
+                                  details={"chat_id": chat_id, "message_id": message_id})
                 
                 await update.message.reply_text(
                     f"✅ Пост с ID {message_id} успешно отредактирован.",
@@ -1112,9 +1124,14 @@ class PostHandler(BaseHandler):
                         "ℹ️ Текст поста не изменен, так как новый текст идентичен старому.",
                         reply_markup=ReplyKeyboardRemove()
                     )
+                elif "chat_id is empty" in str(e).lower():
+                    await update.message.reply_text(
+                        "❌ Ошибка: не указан chat_id. Используйте формат: /edit_sent_post <chat_id> <message_id> <текст>",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
                 else:
                     logger.error("ошибка_при_редактировании_поста", e, 
-                               details={"message_id": message_id, "user_id": user_id})
+                               details={"chat_id": chat_id, "message_id": message_id, "user_id": user_id})
                     await update.message.reply_text(
                         f"❌ Ошибка при редактировании поста: {str(e)}",
                         reply_markup=ReplyKeyboardRemove()
@@ -1122,7 +1139,7 @@ class PostHandler(BaseHandler):
             
             except Exception as e:
                 logger.error("неизвестная_ошибка_при_редактировании_поста", e, 
-                           details={"message_id": message_id, "user_id": user_id})
+                           details={"chat_id": chat_id, "message_id": message_id, "user_id": user_id})
                 await update.message.reply_text(
                     f"❌ Произошла ошибка при редактировании поста: {str(e)}",
                     reply_markup=ReplyKeyboardRemove()
@@ -1133,7 +1150,7 @@ class PostHandler(BaseHandler):
                 "❌ Некорректный формат ID сообщения. Используйте только числовой ID.",
                 reply_markup=ReplyKeyboardRemove()
             )
-        
+    
     async def edit_sent_post_with_caption(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Редактирование подписи к изображению в отправленном посте"""
         user_id = update.effective_user.id
@@ -1142,16 +1159,28 @@ class PostHandler(BaseHandler):
         if not context.args or len(context.args) < 2:
             await update.message.reply_text(
                 "⚠️ Недостаточно параметров.\n\n"
-                "Использование: /edit_caption <message_id> <новый_текст>\n\n"
-                "Пример: /edit_caption 123456 Это обновленная подпись к изображению",
+                "Использование: /edit_caption <message_id> <новый_текст>\n"
+                "Или: /edit_caption <chat_id> <message_id> <новый_текст>\n\n"
+                "Примеры:\n"
+                "1. /edit_caption 123456 Это обновленная подпись к изображению\n"
+                "2. /edit_caption -1001234567890 123456 Это обновленная подпись к изображению",
                 reply_markup=ReplyKeyboardRemove()
             )
             return
         
         try:
-            # Извлекаем message_id и новый текст
-            message_id = int(context.args[0])
-            new_caption = " ".join(context.args[1:])
+            # Проверяем, указан ли chat_id
+            if len(context.args) >= 3 and (context.args[0].startswith('-100') or context.args[0].startswith('@')):
+                # Формат: /edit_caption <chat_id> <message_id> <текст>
+                chat_id = context.args[0]
+                message_id = int(context.args[1])
+                new_caption = " ".join(context.args[2:])
+            else:
+                # Формат: /edit_caption <message_id> <текст>
+                # Используем ID текущего чата
+                chat_id = update.effective_chat.id
+                message_id = int(context.args[0])
+                new_caption = " ".join(context.args[1:])
             
             # Проверяем, что у нас есть текст для обновления
             if not new_caption:
@@ -1164,14 +1193,14 @@ class PostHandler(BaseHandler):
             try:
                 # Пробуем отредактировать подпись к изображению
                 await self.application.bot.edit_message_caption(
-                    chat_id=None,  # Будет использоваться тот же чат
+                    chat_id=chat_id,
                     message_id=message_id,
                     caption=new_caption,
                     parse_mode='HTML'
                 )
                 
                 logger.admin_action(user_id, "Редактирование поста", "Подпись к изображению успешно отредактирована", 
-                                  details={"message_id": message_id})
+                                  details={"chat_id": chat_id, "message_id": message_id})
                 
                 await update.message.reply_text(
                     f"✅ Подпись к изображению с ID {message_id} успешно отредактирована.",
@@ -1189,9 +1218,14 @@ class PostHandler(BaseHandler):
                         "ℹ️ Подпись не изменена, так как новый текст идентичен старому.",
                         reply_markup=ReplyKeyboardRemove()
                     )
+                elif "chat_id is empty" in str(e).lower():
+                    await update.message.reply_text(
+                        "❌ Ошибка: не указан chat_id. Используйте формат: /edit_caption <chat_id> <message_id> <текст>",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
                 else:
                     logger.error("ошибка_при_редактировании_подписи", e, 
-                               details={"message_id": message_id, "user_id": user_id})
+                               details={"chat_id": chat_id, "message_id": message_id, "user_id": user_id})
                     await update.message.reply_text(
                         f"❌ Ошибка при редактировании подписи: {str(e)}",
                         reply_markup=ReplyKeyboardRemove()
@@ -1199,7 +1233,7 @@ class PostHandler(BaseHandler):
             
             except Exception as e:
                 logger.error("неизвестная_ошибка_при_редактировании_подписи", e, 
-                           details={"message_id": message_id, "user_id": user_id})
+                           details={"chat_id": chat_id, "message_id": message_id, "user_id": user_id})
                 await update.message.reply_text(
                     f"❌ Произошла ошибка при редактировании подписи: {str(e)}",
                     reply_markup=ReplyKeyboardRemove()
