@@ -431,4 +431,9 @@ def create_post_handlers(post_handler: PostHandler, admin_ids: list) -> list:
         # Обработчик для управления постами (новый)
         CommandHandler('manage_posts', post_handler.manage_posts,
                       filters=filters.User(user_id=admin_ids)),
+        # Обработчики для редактирования отправленных постов
+        CommandHandler('edit_sent_post', post_handler.edit_sent_post,
+                      filters=filters.User(user_id=admin_ids)),
+        CommandHandler('edit_caption', post_handler.edit_sent_post_with_caption,
+                      filters=filters.User(user_id=admin_ids)),
     ] 

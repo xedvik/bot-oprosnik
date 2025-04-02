@@ -56,6 +56,8 @@ async def _async_setup_commands(application: Application, admin_ids: list):
         BotCommand("create_post", "Создать новый пост"),
         BotCommand("list_posts", "Показать список постов"),
         BotCommand("manage_posts", "Управление постами (редактирование, удаление)"),
+        BotCommand("edit_sent_post", "Редактировать текст отправленного поста"),
+        BotCommand("edit_caption", "Редактировать подпись к изображению"),
     ]
     
     # Системные команды
@@ -157,6 +159,8 @@ def get_admin_commands_description() -> str:
         "/create_post - Создать новый пост",
         "/list_posts - Просмотреть список постов",
         "/manage_posts - Управление постами (отправка, редактирование, удаление)",
+        "/edit_sent_post - Редактировать текст отправленного поста",
+        "/edit_caption - Редактировать подпись к изображению",
     ]
     
     return "\n".join(commands) 

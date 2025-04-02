@@ -1056,3 +1056,157 @@ class PostHandler(BaseHandler):
         )
         
         return SELECTING_POST_ACTION
+    
+    async def edit_sent_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Редактирование отправленного поста"""
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Редактирование поста", "Начало редактирования отправленного поста")
+        
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "⚠️ Недостаточно параметров.\n\n"
+                "Использование: /edit_sent_post <message_id> <новый_текст>\n\n"
+                "Пример: /edit_sent_post 123456 Это обновленный текст поста",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return
+        
+        try:
+            # Извлекаем message_id и новый текст
+            message_id = int(context.args[0])
+            new_text = " ".join(context.args[1:])
+            
+            # Проверяем, что у нас есть текст для обновления
+            if not new_text:
+                await update.message.reply_text(
+                    "⚠️ Необходимо указать новый текст для поста.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return
+            
+            try:
+                # Пробуем отредактировать сообщение
+                await self.application.bot.edit_message_text(
+                    chat_id=None,  # Будет использоваться тот же чат
+                    message_id=message_id,
+                    text=new_text,
+                    parse_mode='HTML'
+                )
+                
+                logger.admin_action(user_id, "Редактирование поста", "Пост успешно отредактирован", 
+                                  details={"message_id": message_id})
+                
+                await update.message.reply_text(
+                    f"✅ Пост с ID {message_id} успешно отредактирован.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                
+            except telegram.error.BadRequest as e:
+                if "message to edit not found" in str(e).lower():
+                    await update.message.reply_text(
+                        f"❌ Сообщение с ID {message_id} не найдено. Убедитесь, что ID указан верно, и бот имеет доступ к этому сообщению.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                elif "message is not modified" in str(e).lower():
+                    await update.message.reply_text(
+                        "ℹ️ Текст поста не изменен, так как новый текст идентичен старому.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                else:
+                    logger.error("ошибка_при_редактировании_поста", e, 
+                               details={"message_id": message_id, "user_id": user_id})
+                    await update.message.reply_text(
+                        f"❌ Ошибка при редактировании поста: {str(e)}",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+            
+            except Exception as e:
+                logger.error("неизвестная_ошибка_при_редактировании_поста", e, 
+                           details={"message_id": message_id, "user_id": user_id})
+                await update.message.reply_text(
+                    f"❌ Произошла ошибка при редактировании поста: {str(e)}",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+        
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Некорректный формат ID сообщения. Используйте только числовой ID.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+    async def edit_sent_post_with_caption(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Редактирование подписи к изображению в отправленном посте"""
+        user_id = update.effective_user.id
+        logger.admin_action(user_id, "Редактирование поста", "Начало редактирования подписи к изображению")
+        
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "⚠️ Недостаточно параметров.\n\n"
+                "Использование: /edit_caption <message_id> <новый_текст>\n\n"
+                "Пример: /edit_caption 123456 Это обновленная подпись к изображению",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return
+        
+        try:
+            # Извлекаем message_id и новый текст
+            message_id = int(context.args[0])
+            new_caption = " ".join(context.args[1:])
+            
+            # Проверяем, что у нас есть текст для обновления
+            if not new_caption:
+                await update.message.reply_text(
+                    "⚠️ Необходимо указать новую подпись для изображения.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return
+            
+            try:
+                # Пробуем отредактировать подпись к изображению
+                await self.application.bot.edit_message_caption(
+                    chat_id=None,  # Будет использоваться тот же чат
+                    message_id=message_id,
+                    caption=new_caption,
+                    parse_mode='HTML'
+                )
+                
+                logger.admin_action(user_id, "Редактирование поста", "Подпись к изображению успешно отредактирована", 
+                                  details={"message_id": message_id})
+                
+                await update.message.reply_text(
+                    f"✅ Подпись к изображению с ID {message_id} успешно отредактирована.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                
+            except telegram.error.BadRequest as e:
+                if "message to edit not found" in str(e).lower():
+                    await update.message.reply_text(
+                        f"❌ Сообщение с ID {message_id} не найдено. Убедитесь, что ID указан верно, и бот имеет доступ к этому сообщению.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                elif "message is not modified" in str(e).lower():
+                    await update.message.reply_text(
+                        "ℹ️ Подпись не изменена, так как новый текст идентичен старому.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                else:
+                    logger.error("ошибка_при_редактировании_подписи", e, 
+                               details={"message_id": message_id, "user_id": user_id})
+                    await update.message.reply_text(
+                        f"❌ Ошибка при редактировании подписи: {str(e)}",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+            
+            except Exception as e:
+                logger.error("неизвестная_ошибка_при_редактировании_подписи", e, 
+                           details={"message_id": message_id, "user_id": user_id})
+                await update.message.reply_text(
+                    f"❌ Произошла ошибка при редактировании подписи: {str(e)}",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+        
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Некорректный формат ID сообщения. Используйте только числовой ID.",
+                reply_markup=ReplyKeyboardRemove()
+            )
